@@ -147,7 +147,7 @@ class Tomography(dl.Application):
         latent_space = self.fc_mu(self.encoder(yhat)) #Estimated latent space
 
         proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
-        tot_loss = proj_loss + latent_loss
+        tot_loss = proj_loss + latent_loss + rtv_loss
 
         loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "rtv_loss":rtv_loss, "total_loss": tot_loss}
         for name, v in loss.items():
@@ -201,7 +201,6 @@ class Tomography(dl.Application):
         
         Args:
         - q (torch.Tensor): Tensor of quaternions with shape (N, 4), where N is the number of quaternions.
-        - lambda_q_valid (float): Regularization strength for quaternion validity. A higher value enforces the constraint more strictly.
         
         Returns:
         - loss (torch.Tensor): The quaternion validity loss.
