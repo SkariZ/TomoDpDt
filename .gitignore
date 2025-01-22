@@ -1,0 +1,10 @@
+# Ignore pycache
+__pycache__/
+# Ignore .pyc files
+*.pyc
+# Ignore .pyo files
+*.pyo
+# Ignore .pyd files
+*.pyd
+# Ignore .pyz files
+*.pyz

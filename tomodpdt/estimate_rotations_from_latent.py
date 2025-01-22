@@ -12,7 +12,10 @@ def process_latent_space(
     polyorder=2,
     max_peaks=7,
     min_peaks=2,
+    prominence=0.7,
+    height_factor=0.8,
     basis_functions=10,
+    **kwargs
 ):
     """
     Process the latent space to compute quaternions and peaks.
@@ -29,9 +32,12 @@ def process_latent_space(
     - polyorder (int): Polynomial order for smoothing.
     - max_peaks (int): Maximum allowed number of peaks.
     - min_peaks (int): Minimum required number of peaks.
-
+    - prominence (float): Prominence for peak detection.
+    - height_factor (float): Height factor for peak detection.
+    - basis_functions (int): Number of basis functions.
+    
     Returns:
-    - dict: Processed data containing quaternions, peaks, and smoothed distances etc.
+    - dict: Processed data containing quaternions, coefficients, basis functions, peaks, and smoothed distances.
     """
 
     # Ensure frames and latent space are tensors
@@ -58,7 +64,14 @@ def process_latent_space(
     res /= max(res)  # Normalize
 
     # Detect peaks
-    peaks = find_peaks(res, peaks_period_range=peaks_period_range, max_peaks=max_peaks, min_peaks=min_peaks)
+    peaks = find_peaks(
+        res, 
+        peaks_period_range=peaks_period_range, 
+        max_peaks=max_peaks, 
+        min_peaks=min_peaks, 
+        prominence=prominence,
+        height_factor=height_factor
+        )
 
     # Interpolate angles based on peaks
     total_timesteps = max(peaks) + 1
@@ -102,7 +115,7 @@ def process_latent_space(
     # Return processed data as dictionary and torch tensors on the same device
 
     return {
-        "quaternions": quaternions.to,
+        "quaternions": quaternions.to(device),
         "coeffs": coeffs.to(device),
         "basis": basis.to(device),
         "peaks": torch.tensor(peaks).to(device),
@@ -139,20 +152,20 @@ def compute_normalized_distances(z):
     dists = torch.sqrt(((z - d0) ** 2).sum(dim=1))
     return dists / dists.max()
 
-def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2):
+def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.7, height_factor=0.8):
         """Find peaks in smoothed distance data."""
-        height = 0.8 * np.max(res)
+        height = height_factor * np.max(res)
         distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
 
         for dist in range(*distance_range):
-            peaks = signal.find_peaks(res, distance=dist, height=height, prominence=0.7)[0]
+            peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
             if min_peaks < len(peaks) < max_peaks:
                 break
 
         peaks = np.append(0, peaks)  # Ensure first peak at index 0
 
         if len(peaks) < min_peaks:
-            peaks = np.append(peaks, len(res) - 1)  # Add last peak if necessary
+            peaks = np.append(peaks, len(res))  # Add last peak if necessary
 
         return peaks
 

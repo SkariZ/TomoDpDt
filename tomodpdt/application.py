@@ -10,22 +10,25 @@ import estimate_rotations_from_latent as erfl
 
 class Tomography(dl.Application):
     def __init__(self,
-                 volume_size: Optional[Sequence(int)]=(96, 96, 96),
+                 volume_size: Optional[Sequence[int]]=(96, 96, 96),
                  vae_model: Optional[torch.nn.Module]=None,
                  imaging_model: Optional[torch.nn.Module]=None,
                  initial_volume: Optional[str]=None, #initial guess for volume - gaussian, constant, random, given
+                 rotation_optim_case: Optional[str]=None, #rotation optimization case - 'quaternion', 'basis'
                  optimizer=None,
                  volume_init=None, #initial guess for volume explicitly
                  **kwargs,
                  ):
         
-        self.N=volume_size[0]
-        self.vae_model = vae_model or dl.VariationalAutoEncoder(input_size=(self.volume_size[0],self.volume_size[1]))
+        self.N = volume_size[0]
+        self.volume_size = volume_size
+        self.vae_model = vae_model or dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]))
         self.encoder = self.vae_model.encoder
         self.fc_mu = self.vae_model.fc_mu
         self.imaging_model = imaging_model if imaging_model is not None else "projection_model"
         self.device = self.vae_model.device
         self.initial_volume = initial_volume
+        self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         self.volume_init = volume_init
         super().__init__(**kwargs)
 
@@ -64,10 +67,21 @@ class Tomography(dl.Application):
         self.volume = self.initialize_volume()
 
         # Retrieve the initial rotation parameters
-        self.rotation_params = erfl(latent_space, **kwargs) #Later: add axis also
+        self.rotation_initial_dict = erfl(latent_space, **kwargs) #Later: add axis also
+
+        # Set the rotation parameters
+        if self.rotation_optim_case == 'quaternion':
+            rotation_params = self.rotation_initial_dict['quaternions']
+        elif self.rotation_optim_case == 'basis':
+            rotation_params = self.rotation_initial_dict['coeffs']
+            self.basis = self.rotation_initial_dict['basis']
+        else:
+            raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'. as of now...")
+        
+        self.rotation_params = nn.Parameter(rotation_params.to(self.device))
         
         # Setting frames to the number of rotations
-        self.frames = projections[:len(self.rotation_params)]
+        self.frames = projections[:len(rotation_params)]
 
         @self.optimizer.params
         def params(self):
@@ -129,8 +143,6 @@ class Tomography(dl.Application):
     def training_step(self, batch, batch_idx):
         #x,y = self.train_preprocess(batch) # batch = ground_truth projections
 
-        
-        
         yhat = self.forward(batch_idx) #Estimated projections
 
         latent_space = self.fc_mu(self.encoder(yhat))
@@ -155,7 +167,13 @@ class Tomography(dl.Application):
         return XXX
 
     def get_quaternions(self, rotations):
-        pass
+        """
+        Get quaternions from the rotation parameters."""
+
+        if self.rotation_optim_case == 'quaternion':
+            return rotations
+        elif self.rotation_optim_case == 'basis':
+            return torch.matmul(self.basis, rotations) 
 
     def quaternion_to_rotation_matrix(self, q):
         """
@@ -204,3 +222,20 @@ class Tomography(dl.Application):
         # Apply grid_sample to rotate the volume
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
         return rotated_volume.squeeze()
+    
+
+# Testing the code
+if __name__ == "__main__":
+
+    # Create a dummy dataset
+    N = 96
+    projections = torch.rand(10, N, N)
+
+    # Create the tomography model
+    tomography = Tomography(volume_size=(N, N, N))
+
+    # Initialize the parameters
+    tomography.initialize_parameters(projections)
+
+    # Perform a forward pass
+    tomography(0)
