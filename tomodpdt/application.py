@@ -38,7 +38,7 @@ class Tomography(dl.Application):
         # Set the imaging model
         if imaging_model=="projection_model":
             def projection(volume):
-                return torch.sum(volume, dim=0)
+                return torch.sum(volume, dim=2)
             self.imaging_model = projection
 
         # Set the grid for rotating the volume
@@ -144,13 +144,12 @@ class Tomography(dl.Application):
         #x,y = self.train_preprocess(batch) # batch = ground_truth projections
 
         yhat = self.forward(batch_idx) #Estimated projections
+        latent_space = self.fc_mu(self.encoder(yhat)) #Estimated latent space
 
-        latent_space = self.fc_mu(self.encoder(yhat))
-
-        proj_loss, latent_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
+        proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
         tot_loss = proj_loss + latent_loss
 
-        loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "total_loss": tot_loss}
+        loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "rtv_loss":rtv_loss, "total_loss": tot_loss}
         for name, v in loss.items():
             self.log(
                 f"train_{name}",
@@ -162,9 +161,66 @@ class Tomography(dl.Application):
             )
         return tot_loss
     
-    def compute_loss(yhat, y):
-        XXX
-        return XXX
+    def compute_loss(self, yhat, latent_space, batch, batch_idx):
+        
+        # Compute the projection loss - MAE
+        proj_loss = F.l1_loss(yhat, batch)
+
+        # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
+        latent_loss = F.l1_loss(latent_space, self.latent[batch_idx])
+
+        # Compute the total variation regularization term
+        R_TV = self.total_variation_regularization(self.volume)
+
+        return proj_loss, latent_loss, R_TV
+
+    def total_variation_regularization(self, delta_n):
+        """
+        Calculate the total variation regularization term in 3D without creating large intermediate tensors.
+
+        Args:
+        - delta_n (torch.Tensor): A tensor of shape (D, H, W) or higher dimensional array.
+        - lambda_TV (float): Scalar regularization strength for the total variation regularization.
+
+        Returns:
+        - R_TV (float): The total variation regularization term.
+        """
+        # Compute gradients and sum them inline to avoid intermediate tensors
+        grad_x_sum = torch.sum(torch.abs(delta_n[1:, :, :] - delta_n[:-1, :, :]))  # Gradient in x-direction
+        grad_y_sum = torch.sum(torch.abs(delta_n[:, 1:, :] - delta_n[:, :-1, :]))  # Gradient in y-direction
+        grad_z_sum = torch.sum(torch.abs(delta_n[:, :, 1:] - delta_n[:, :, :-1]))  # Gradient in z-direction
+
+        # Combine all gradient sums
+        R_TV = (grad_x_sum + grad_y_sum + grad_z_sum) / delta_n.numel()
+
+        return R_TV
+
+    def quaternion_validity_loss(self, q):
+        """
+        Loss to enforce that quaternions remain valid (unit quaternions).
+        
+        Args:
+        - q (torch.Tensor): Tensor of quaternions with shape (N, 4), where N is the number of quaternions.
+        - lambda_q_valid (float): Regularization strength for quaternion validity. A higher value enforces the constraint more strictly.
+        
+        Returns:
+        - loss (torch.Tensor): The quaternion validity loss.
+        """
+        # Compute the squared norm of the quaternion
+        norm_squared = torch.sum(q**2, dim=1)  # Sum over the 4 components (q0, q1, q2, q3) for each quaternion
+        
+        # Compute the difference between the norm squared and 1
+        diff_from_unit = norm_squared - 1
+        
+        # The loss is the square of the difference
+        return torch.sum(diff_from_unit**2) / q.shape[0]
+    
+    def q0_constraint_loss(self, q):
+        """
+        Enforce that the q0 component of the quaternion to be [1, 0, 0, 0]. Just a simple constraint. So it stays at the starting point.
+        """
+        q_start = torch.tensor([1, 0, 0, 0], device=self.device)
+        return torch.sum((q - q_start)**2)
 
     def get_quaternions(self, rotations):
         """
@@ -222,7 +278,35 @@ class Tomography(dl.Application):
         # Apply grid_sample to rotate the volume
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
         return rotated_volume.squeeze()
-    
+
+    def gaussian_blur_projection(self, projections, sigma=1):
+        """
+        Apply Gaussian blur to a set of projections.
+
+        Args:
+        - projections (torch.Tensor): A tensor of shape (N, H, W) representing N projections.
+        - sigma (float): Standard deviation of the Gaussian kernel.
+
+        Returns:
+        - blurred_projections (torch.Tensor): Blurred projections.
+        """
+        # Create Gaussian kernel
+        kernel_size = 2 * int(3 * sigma) + 1
+        grid = torch.arange(kernel_size, dtype=projections.dtype, device=projections.device) - kernel_size // 2
+        x, y = torch.meshgrid(grid, grid, indexing='ij')
+        kernel = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
+        kernel = kernel / kernel.sum()
+
+        # Reshape kernel to match conv2d input requirements
+        kernel = kernel.view(1, 1, kernel_size, kernel_size)
+
+        # Ensure input has a channel dimension
+        projections = projections.unsqueeze(1)  # Shape (N, 1, H, W)
+
+        # Apply Gaussian blur
+        blurred_projections = F.conv2d(projections, kernel, padding=kernel_size // 2)
+
+        return blurred_projections.squeeze(1)  # Remove the channel dimension
 
 # Testing the code
 if __name__ == "__main__":
