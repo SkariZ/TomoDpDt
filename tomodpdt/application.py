@@ -1,20 +1,21 @@
 import deeplay as dl
-import deeptrack as dt
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+from typing import Optional, Sequence, Callable, List
 
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
 
 class Tomography(dl.Application):
     def __init__(self,
-                 volume_size: Optional[Sequence(int)] = (96,96,96),
+                 volume_size: Optional[Sequence(int)]=(96, 96, 96),
                  vae_model: Optional[torch.nn.Module]=None,
-                 imaging_model: Optional[torch.nn.Module] = None,
-                 initial_volume: Optional[str] = None, #Or provide initial guess for volume explicitly
+                 imaging_model: Optional[torch.nn.Module]=None,
+                 initial_volume: Optional[str]=None, #initial guess for volume - gaussian, constant, random, given
                  optimizer=None,
-                 volume_init=None,
+                 volume_init=None, #initial guess for volume explicitly
                  **kwargs,
                  ):
         
@@ -43,16 +44,30 @@ class Tomography(dl.Application):
         self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self.device)
 
                 
-    def initialize_parameters(self, projections,**kwargs):
+    def initialize_parameters(self, projections, **kwargs):
+        
+        #Normalize projections
+        if not isinstance(projections, torch.Tensor):
+            projections = torch.tensor(projections)
+        
+        if 'normalize' in kwargs:
+            if kwargs['normalize']:
+                projections = (projections - projections.min()) / (projections.max() - projections.min())
+        
+        # Add a channel dimension if necessary
+        if projections.dim() == 3:
+            projections = projections.unsqueeze(1)
+
+
         latent_space = self.vae.fc_mu(self.vae.encoder(projections))
         self.latent = latent_space
         self.volume = self.initialize_volume()
 
         # Retrieve the initial rotation parameters
-        self.rotation_params = erfl(latent_space,**kwargs) #Later: add axis also
+        self.rotation_params = erfl(latent_space, **kwargs) #Later: add axis also
         
         # Setting frames to the number of rotations
-        self.frames = projections[:len(self.quaternions)]
+        self.frames = projections[:len(self.rotation_params)]
 
         @self.optimizer.params
         def params(self):
@@ -77,8 +92,7 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
             cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
             cloud = cloud / cloud.max()
-            cloud = cloud.to(self.device)
-            self.volume = nn.Parameter(cloud)
+            self.volume = nn.Parameter(cloud.to(self.device))
 
         elif self.initial_volume == 'constant':
             self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self.device))
@@ -92,24 +106,27 @@ class Tomography(dl.Application):
         else:
             self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self.device))
     
-    def forward(self,idx):
+    def forward(self, idx):
         """
         Forward pass of the model.
         """
         volume = self.volume
-        rotations = self.get_quaternions(self.rotation_params)[idx]
+        quaternions = self.get_quaternions(self.rotation_params)[idx]
 
-        batch_size = rotations.shape[0]
+        # Normalize quaternions during computation
+        quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
+
+        batch_size = quaternions.shape[0]
         estimated_projections = torch.zeros(batch_size, self.N, self.N, device=self.device)
 
         # Rotate the volume and estimate the projections
         for i in range(batch_size):
-            rotated_volume = self.apply_rotation(volume, rotations[i])
+            rotated_volume = self.apply_rotation(volume, quaternions[i])
             estimated_projections[i] = self.imaging_model(rotated_volume)
 
         return estimated_projections
     
-    def training_step(self,batch,batch_idx):
+    def training_step(self, batch, batch_idx):
         #x,y = self.train_preprocess(batch) # batch = ground_truth projections
 
         
@@ -119,7 +136,7 @@ class Tomography(dl.Application):
         latent_space = self.fc_mu(self.encoder(yhat))
 
         proj_loss, latent_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
-        tot_loss=proj_loss+latent_loss
+        tot_loss = proj_loss + latent_loss
 
         loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "total_loss": tot_loss}
         for name, v in loss.items():
@@ -133,9 +150,33 @@ class Tomography(dl.Application):
             )
         return tot_loss
     
-    def compute_loss(yhat,y):
+    def compute_loss(yhat, y):
         XXX
         return XXX
+
+    def get_quaternions(self, rotations):
+        pass
+
+    def quaternion_to_rotation_matrix(self, q):
+        """
+        Convert a quaternion to a rotation matrix in a differentiable manner.
+
+        Parameters:
+        - q (torch.Tensor): Quaternions of shape (4,).
+
+        Returns:
+        - R (torch.Tensor): 3x3 rotation matrix.
+        """
+        qw, qx, qy, qz = q.unbind()
+
+        # Compute the elements of the rotation matrix directly from quaternion components
+        R = torch.stack([
+            torch.stack([1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)], dim=-1),
+            torch.stack([2 * (qx * qy + qz * qw), 1 - 2 * (qx**2 + qz**2), 2 * (qy * qz - qx * qw)], dim=-1),
+            torch.stack([2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx**2 + qy**2)], dim=-1),
+        ], dim=-2)
+
+        return R
 
     def apply_rotation(self, volume, q):
         """
