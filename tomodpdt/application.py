@@ -180,7 +180,6 @@ class Tomography(dl.Application):
 
         Args:
         - delta_n (torch.Tensor): A tensor of shape (D, H, W) or higher dimensional array.
-        - lambda_TV (float): Scalar regularization strength for the total variation regularization.
 
         Returns:
         - R_TV (float): The total variation regularization term.
@@ -201,7 +200,7 @@ class Tomography(dl.Application):
         
         Args:
         - q (torch.Tensor): Tensor of quaternions with shape (N, 4), where N is the number of quaternions.
-        
+
         Returns:
         - loss (torch.Tensor): The quaternion validity loss.
         """
