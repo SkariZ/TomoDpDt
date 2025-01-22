@@ -22,15 +22,17 @@ class Tomography(dl.Application):
         
         self.N = volume_size[0]
         self.volume_size = volume_size
-        self.vae_model = vae_model or dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]))
+        self.vae_model = vae_model if vae_model is not None else dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]), latent_dim=2)
         self.encoder = self.vae_model.encoder
         self.fc_mu = self.vae_model.fc_mu
         self.imaging_model = imaging_model if imaging_model is not None else "projection_model"
-        self.device = self.vae_model.device
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.initial_volume = initial_volume
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         self.volume_init = volume_init
         super().__init__(**kwargs)
+
+        self.vae_model.to(self.device)
 
         # Set the optimizer
         self.optimizer = optimizer or torch.nn.optimizers.Adam(lr=5e-3)
