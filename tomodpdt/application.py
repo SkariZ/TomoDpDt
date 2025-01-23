@@ -2,7 +2,7 @@ import deeplay as dl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset
+from torch.utils.data import DataLoader, TensorDataset, Dataset
 
 from typing import Optional, Sequence#, Callable, List
 
@@ -11,32 +11,50 @@ import estimate_rotations_from_latent as erfl
 
 class Tomography(dl.Application):
     def __init__(self,
-                 volume_size: Optional[Sequence[int]]=(96, 96, 96),
-                 vae_model: Optional[torch.nn.Module]=None,
-                 imaging_model: Optional[torch.nn.Module]=None,
-                 initial_volume: Optional[str]=None, #initial guess for volume - gaussian, constant, random, given
-                 rotation_optim_case: Optional[str]=None, #rotation optimization case - 'quaternion', 'basis'
+                 volume_size: Optional[Sequence[int]] = (96, 96, 96),
+                 vae_model: Optional[torch.nn.Module] = None,
+                 imaging_model: Optional[torch.nn.Module] = None,
+                 initial_volume: Optional[str] = None,  # Initial guess for volume
+                 rotation_optim_case: Optional[str] = None,  # Rotation optimization case ('quaternion', 'basis')
                  optimizer=None,
-                 volume_init=None, #initial guess for volume explicitly
-                 **kwargs,
-                 ):
-        
+                 volume_init=None,  # Initial guess for volume explicitly
+                 **kwargs):
+        # Set volume size
         self.N = volume_size[0]
         self.volume_size = volume_size
+        
+        # If VAE model is not passed, initialize a default VAE model
         self.vae_model = vae_model if vae_model is not None else dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]), latent_dim=2)
+        
+        # Set the encoder and other VAE components
         self.encoder = self.vae_model.encoder
         self.fc_mu = self.vae_model.fc_mu
-        self.imaging_model = imaging_model if imaging_model is not None else "projection_model"
+        
+        # Set the imaging model (either passed as a module or projection function)
+        self.imaging_model = imaging_model if imaging_model is not None else "projection"
+        
+        # Determine the device (cuda if available, else cpu)
         self._device = torch.device("cuda" if torch.cuda.is_available() else getattr(vae_model, "device", "cpu"))
-        self.initial_volume = initial_volume
+        
+        # Set initial volume if provided, otherwise default to "zeros"
+        self.initial_volume = initial_volume if initial_volume is not None else "zeros"
+        
+        # Set the rotation optimization case, default to "quaternion"
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
+        
+        # Set the optimizer (if provided)
         self.optimizer = optimizer
+        
+        # Set volume initialization (if provided)
         self.volume_init = volume_init
+        
+        # Call the superclass constructor
         super().__init__(**kwargs)
 
-        # Set the imaging model
-        if imaging_model == "projection_model":
+        # Set the imaging model function if 'projection' is selected
+        if self.imaging_model == "projection":
             def projection(volume):
+                # Simple projection summing along one axis (dim=2)
                 return torch.sum(volume, dim=2)
             self.imaging_model = projection
 
@@ -73,14 +91,14 @@ class Tomography(dl.Application):
         self.latent = latent_space
 
         # Initialize the volume
-        self.volume = self.initialize_volume()
+        self.initialize_volume()
 
         # Retrieve the initial rotation parameters
         self.rotation_initial_dict = erfl.process_latent_space(
             z=latent_space, 
             frames=projections, 
             **kwargs
-            ) # Later: add axis also
+            )  # Later: add axis also
 
         # Set the rotation parameters
         if self.rotation_optim_case == 'quaternion':
@@ -95,9 +113,10 @@ class Tomography(dl.Application):
         
         # Setting frames to the number of rotations
         self.frames = projections[:len(rotation_params)]
+        self.frames = self.frames.squeeze(1)
 
         # Set the optimizer
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-3)
+        self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
 
     def train_vae(self, projections):
         """
@@ -113,17 +132,25 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=500, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=100, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
-
-        # Update the VAE model and the needed components and move them to the device
-        self.encoder = self.vae_model.encoder.to(self._device)
-        self.fc_mu = self.vae_model.fc_mu.to(self._device)
 
         # Freeze the VAE model
         for param in self.vae_model.parameters():
             param.requires_grad = False
 
+        # Freeze the encoder layer
+        for param in self.vae_model.encoder.parameters():
+            param.requires_grad = False
+
+        # Freeze the fc_mu layer
+        for param in self.vae_model.fc_mu.parameters():
+            param.requires_grad = False
+
+        # Update the VAE model and the needed components and move them to the device
+        self.encoder = self.vae_model.encoder.to(self._device)
+        self.fc_mu = self.vae_model.fc_mu.to(self._device)
+        
     def initialize_volume(self):
         """
         Initialize the volume.
@@ -138,6 +165,9 @@ class Tomography(dl.Application):
             cloud = cloud / cloud.max()
             self.volume = nn.Parameter(cloud.to(self._device))
 
+        elif self.initial_volume == 'zeros':
+            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device))
+
         elif self.initial_volume == 'constant':
             self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device))
 
@@ -146,9 +176,10 @@ class Tomography(dl.Application):
 
         elif self.initial_volume == 'given' and self.volume_init is not None:
             self.volume = nn.Parameter(self.volume_init.to(self._device))
-
+        
         else:
-            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device))
+            raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
+
     
     def forward(self, idx):
         """
@@ -156,7 +187,7 @@ class Tomography(dl.Application):
         """
         volume = self.volume
         quaternions = self.get_quaternions(self.rotation_params)[idx]
-
+        
         # Normalize quaternions during computation
         quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
 
@@ -173,13 +204,16 @@ class Tomography(dl.Application):
     def training_step(self, batch, batch_idx):
         #x,y = self.train_preprocess(batch) # batch = ground_truth projections
 
-        yhat = self.forward(batch_idx) # Estimated projections
-        latent_space = self.fc_mu(self.encoder(yhat)) # Estimated latent space
+        idx = batch
+        batch = self.frames[idx]
 
-        proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
+        yhat = self.forward(idx)  # Estimated projections
+        latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))  # Estimated latent space
+
+        proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, idx)
         tot_loss = proj_loss + latent_loss + rtv_loss
 
-        loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "rtv_loss":rtv_loss, "total_loss": tot_loss}
+        loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "rtv_loss": rtv_loss, "total_loss": tot_loss}
         for name, v in loss.items():
             self.log(
                 f"train_{name}",
@@ -250,9 +284,12 @@ class Tomography(dl.Application):
         q_start = torch.tensor([1, 0, 0, 0], device=self._device)
         return torch.sum((q - q_start)**2)
 
-    def get_quaternions(self, rotations):
+    def get_quaternions(self, rotations=None):
         """
         Get quaternions from the rotation parameters."""
+
+        if rotations is None:
+            rotations = self.rotation_params
 
         if self.rotation_optim_case == 'quaternion':
             return rotations
@@ -336,63 +373,58 @@ class Tomography(dl.Application):
 
         return blurred_projections.squeeze(1)  # Remove the channel dimension
 
+    def full_forward(self):
+        """
+        Forward pass of the model.
 
+        Args:
+        - volume (torch.Tensor): The volume to rotate.
+        - quaternions (torch.Tensor): Quaternions representing rotations.
 
-def plots(tomo, gt=None):
-    import matplotlib.pyplot as plt
+        Returns:
+        - estimated_projections (torch.Tensor): Estimated projections.
+        """
 
-    z = tomo.latent.detach().cpu().numpy()
+        quaternions = self.get_quaternions(self.rotation_params).to(self._device)
+        volume = self.volume.to(self._device)
 
-    plt.figure(figsize=(4, 4))
-    plt.title("Latent space")
-    plt.scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
-    plt.scatter(z[0, 0], z[0, 1], c='r')  # start_point
-    plt.colorbar()
-    plt.show()
+        #Set the grid to the device as well...
+        self.grid = self.grid.to(self._device)
 
-    # 3D plot
-    fig = plt.figure(figsize=(4, 4))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
-    ax.scatter(z[0, 0], z[0, 1], c='r')
-    plt.show()
+        batch_size = quaternions.shape[0]
+        estimated_projections = torch.zeros(batch_size, self.N, self.N, device=self._device)
 
-    # Plot the smoothed distances and peaks
-    smoothed_dists = tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
-    peaks = tomo.rotation_initial_dict['peaks'].cpu().numpy()
+        # Rotate the volume and estimate the projections
+        for i in range(batch_size):
+            rotated_volume = self.apply_rotation(volume, quaternions[i])
+            estimated_projections[i] = self.imaging_model(rotated_volume)
 
-    plt.figure(figsize=(4, 4))
-    plt.plot(smoothed_dists)
-    plt.scatter(peaks, smoothed_dists[peaks], c='r')
-    plt.show()
+        return estimated_projections
+    
+    def get_quaternions_final(self, rotations=None):
+        """
+        Get quaternions from the rotation parameters."""
 
-    # Plot the quaternions
-    q1 = tomo.rotation_initial_dict['quaternions'].cpu().numpy()
+        if rotations is None:
+            rotations = self.rotation_params
 
-    plt.figure(figsize=(7, 4))
-    plt.plot(q1[:, 0], label=r'$q_0$', linewidth=2)
-    plt.plot(q1[:, 1], label=r'$q_1$', linewidth=2)
-    plt.plot(q1[:, 2], label=r'$q_2$', linewidth=2)
-    plt.plot(q1[:, 3], label=r'$q_3$', linewidth=2)
-    # Add a vertical line where q1 ends
-    plt.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
-    if gt is not None:
-        plt.plot(gt[:, 0], '--', label=r'$q_0$', linewidth=2)
-        plt.plot(gt[:, 1], '--', label=r'$q_1$', linewidth=2)
-        plt.plot(gt[:, 2], '--', label=r'$q_2$', linewidth=2)
-        plt.plot(gt[:, 3], '--', label=r'$q_3$', linewidth=2)
-    plt.legend()
-    plt.title("Initial Guess vs True Quaternion Components", fontsize=16)
-    plt.show()
-
-
+        if self.rotation_optim_case == 'quaternion':
+            return rotations
+        elif self.rotation_optim_case == 'basis':
+            return torch.matmul(self.basis.to(self._device), rotations) 
+        
 # Testing the code
 if __name__ == "__main__":
     import numpy as np
+    import plotting
+
+    from importlib import reload
+    reload(plotting)
+
     data = np.load('../test_data/test_data.npz', allow_pickle=True)
     projections = torch.tensor(data["projections"], dtype=torch.float32)
     test_object = torch.tensor(data["volume"], dtype=torch.float32)
-    Q_accum = torch.tensor(data["quaternions"], dtype=torch.float32)
+    q_gt = torch.tensor(data["quaternions"], dtype=torch.float32)
 
     # Create a dummy dataset
     N = projections.shape[-1]
@@ -404,11 +436,17 @@ if __name__ == "__main__":
     tomo.initialize_parameters(projections, normalize=True)
     
     # Visualize the latent space and the initial rotations
-    plots(tomo, gt=Q_accum)
+    plotting.plots_initial(tomo, gt=q_gt, gt_v=test_object)
 
+    # Train the model
+    idx = torch.arange(len(tomo.frames))
 
-    # Perform a forward pass
-    tomo(0)
+    trainer = dl.Trainer(max_epochs=1000, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
 
+    # Plot the training history
+    trainer.history.plot()
+
+    plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
 
 

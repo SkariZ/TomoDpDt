@@ -153,21 +153,22 @@ def compute_normalized_distances(z):
     return dists / dists.max()
 
 def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.7, height_factor=0.8):
-        """Find peaks in smoothed distance data."""
-        height = height_factor * np.max(res)
-        distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
+    """Find peaks in smoothed distance data."""
+    height = height_factor * np.max(res)
+    distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
 
-        for dist in range(*distance_range):
-            peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
-            if min_peaks < len(peaks) < max_peaks:
-                break
+    for dist in range(*distance_range):
+        peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
+        if min_peaks < len(peaks) < max_peaks:
+            break
 
-        peaks = np.append(0, peaks)  # Ensure first peak at index 0
+    peaks = np.append(0, peaks)  # Ensure first peak at index 0
 
-        if len(peaks) < min_peaks:
-            peaks = np.append(peaks, len(res))  # Add last peak if necessary
+    if len(peaks) < min_peaks:
+        peaks = np.append(peaks, len(res))  # Add last peak if necessary
 
-        return peaks
+    return peaks
+
 
 # Example usage
 if __name__ == "__main__":
