@@ -49,15 +49,18 @@ def plots_initial(tomo, gt=None):
     plt.title("Initial Guess vs True Quaternion Components")
     plt.show()
 
+
 def plots_optim(tomo, gt_q=None, gt_v=None):
     
     predicted_object = tomo.volume.detach().cpu()
     projections_pred = tomo.full_forward().detach().cpu().numpy()
+    projections_gt = tomo.frames.detach().cpu().numpy()
     quaternions_pred = tomo.get_quaternions().detach().cpu().numpy()
+    
 
     # Plot the Predicted_objects axes
     fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-    #Title
+    plt.suptitle("Predicted object")
     ax[0].set_title("Sum along x-axis")
     ax[0].imshow(predicted_object.sum(0))
     ax[1].set_title("Sum along y-axis")
@@ -68,7 +71,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
 
     if gt_v is not None:
         fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-        #Title
+        plt.suptitle("Ground truth object")
         ax[0].set_title("Sum along x-axis")
         ax[0].imshow(gt_v.sum(0))
         ax[1].set_title("Sum along y-axis")
@@ -77,11 +80,20 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         ax[2].imshow(gt_v.sum(2))
         plt.show()
 
+    R_idx = np.random.randint(0, projections_pred.shape[0], 9)
     fig, ax = plt.subplots(3, 3, figsize=(6, 6))
     plt.suptitle("Predicted projections")
     for i in range(3):
         for j in range(3):
-            im = ax[i, j].imshow(projections_pred[np.random.randint(0, projections_pred.shape[0])])
+            im = ax[i, j].imshow(projections_pred[R_idx[i * 3 + j]])
+            fig.colorbar(im, ax=ax[i, j])
+    plt.show()
+
+    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
+    plt.suptitle("Ground truth projections")
+    for i in range(3):
+        for j in range(3):
+            im = ax[i, j].imshow(projections_gt[R_idx[i * 3 + j]])
             fig.colorbar(im, ax=ax[i, j])
     plt.show()
 
@@ -98,7 +110,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         plt.plot(gt_q[:, 2], '--', label=r'$q_2$', linewidth=2)
         plt.plot(gt_q[:, 3], '--', label=r'$q_3$', linewidth=2)
     plt.legend()
-    plt.title("Initial Guess vs True Quaternion Components")
+    plt.title("Predicted vs. True Quaternion Components")
     plt.show()
 
     # Difference between predicted and true quaternions
@@ -112,11 +124,11 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         #Add aline at 0
         plt.axhline(y=0, color='black', linestyle='--', linewidth=3)
         plt.legend()
-        plt.title("Difference between Predicted and True Quaternion Components")
+        plt.title("Difference Predicted vs. True Quaternion Components")
         plt.show()
 
     # 2x2 grid of scatter plots for each component of the quaternion
-    fig, ax = plt.subplots(2, 2, figsize=(8, 8))
+    fig, ax = plt.subplots(2, 2, figsize=(6, 6))
     ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0])
     ax[0, 0].set_title(r'$q_0$')
     ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1])

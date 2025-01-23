@@ -189,7 +189,7 @@ class Tomography(dl.Application):
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         
         # Normalize quaternions during computation
-        quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
+        #quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
 
         batch_size = quaternions.shape[0]
         estimated_projections = torch.zeros(batch_size, self.N, self.N, device=self._device)
@@ -202,18 +202,25 @@ class Tomography(dl.Application):
         return estimated_projections
     
     def training_step(self, batch, batch_idx):
-        #x,y = self.train_preprocess(batch) # batch = ground_truth projections
-
         idx = batch
         batch = self.frames[idx]
 
         yhat = self.forward(idx)  # Estimated projections
-        latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))  # Estimated latent space
+        with torch.no_grad():
+            latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))  # Estimated latent space
 
-        proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, idx)
-        tot_loss = proj_loss + latent_loss + rtv_loss
+        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
+        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss
 
-        loss = {"proj_loss": proj_loss, "latent_loss": latent_loss, "rtv_loss": rtv_loss, "total_loss": tot_loss}
+        loss = {
+            "proj_loss": proj_loss, 
+            "latent_loss": latent_loss, 
+            "rtv_loss": rtv_loss, 
+            "qv_loss": qv_loss, 
+            "q0_loss": q0_loss,
+            "rtr_loss": rtr_loss,
+            "total_loss": tot_loss
+            }
         for name, v in loss.items():
             self.log(
                 f"train_{name}",
@@ -225,18 +232,39 @@ class Tomography(dl.Application):
             )
         return tot_loss
     
-    def compute_loss(self, yhat, latent_space, batch, batch_idx):
+    def compute_loss(self, yhat, latent_space, batch, idx):
         
         # Compute the projection loss - MAE
         proj_loss = F.l1_loss(yhat, batch)
 
         # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
-        latent_loss = F.l1_loss(latent_space, self.latent[batch_idx])
+        latent_loss = F.l1_loss(latent_space, self.latent[idx])
 
         # Compute the total variation regularization term
-        R_TV = self.total_variation_regularization(self.volume)
+        rtv_loss = self.total_variation_regularization(self.volume)
 
-        return proj_loss, latent_loss, R_TV
+        # Compute the quaternion validity loss
+        qv_loss = self.quaternion_validity_loss(
+            self.get_quaternions(self.rotation_params)
+            )
+
+        # Compute the q0 constraint loss
+        if torch.sum(idx == 0) > 0:
+            q0_loss = self.q0_constraint_loss(
+                self.get_quaternions(self.rotation_params)[idx == 0]
+                )
+        else:
+            q0_loss = torch.tensor(0.0, device=self._device)
+
+        # Compute the rotational trajectory regularization term
+        if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1:
+            rtr_loss = self.rotational_trajectory_regularization(
+                self.get_quaternions(self.rotation_params)
+                )
+        else:
+            rtr_loss = torch.tensor(0.0, device=self._device)
+
+        return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss
 
     def total_variation_regularization(self, delta_n):
         """
@@ -283,6 +311,31 @@ class Tomography(dl.Application):
         """
         q_start = torch.tensor([1, 0, 0, 0], device=self._device)
         return torch.sum((q - q_start)**2)
+
+    def rotational_trajectory_regularization(self, q):
+        """
+        Calculate the rotational trajectory regularization term.
+        
+        Args:
+        - q (torch.Tensor): A tensor of shape (T, d) where T is the number of time steps and d is the dimensionality of q.
+        Returns:
+        - R_q (float): The rotational trajectory regularization term.
+        """
+
+        # First-order difference (consecutive quaternion differences)
+        first_diff = q[1:] - q[:-1]
+
+        # Second-order difference (smoothness penalty)
+        second_diff = first_diff[1:] - first_diff[:-1]
+
+        # Compute the loss
+        first_order_loss = first_diff.norm(p=2, dim=1)**2  # Penalize large jumps
+        second_order_loss = second_diff.norm(p=2, dim=1)**2  # Penalize abrupt changes in the rate of change
+
+        # Combine first-order and second-order terms
+        reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.shape[0]
+        return reg_terms
+
 
     def get_quaternions(self, rotations=None):
         """
@@ -436,13 +489,14 @@ if __name__ == "__main__":
     tomo.initialize_parameters(projections, normalize=True)
     
     # Visualize the latent space and the initial rotations
-    plotting.plots_initial(tomo, gt=q_gt, gt_v=test_object)
+    plotting.plots_initial(tomo, gt=q_gt)
 
     # Train the model
-    idx = torch.arange(len(tomo.frames))
+    N = len(tomo.frames)
+    idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=1000, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
+    trainer = dl.Trainer(max_epochs=250, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
 
     # Plot the training history
     trainer.history.plot()
