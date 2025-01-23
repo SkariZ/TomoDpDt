@@ -495,7 +495,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=250, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=2500, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
 
     # Plot the training history
