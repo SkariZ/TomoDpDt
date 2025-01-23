@@ -103,17 +103,17 @@ class Tomography(dl.Application):
         """
         Train the VAE model on the given projections.
         """
-        
+
         # Data loader for the VAE model x=projections and y=projections
         data_loader = DataLoader(
-            TensorDataset(projections, projections), batch_size=32, shuffle=True
+            TensorDataset(projections, projections), batch_size=64, shuffle=True
             )
 
         # Build the VAE model
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=10, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=500, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Update the VAE model and the needed components and move them to the device
@@ -337,21 +337,78 @@ class Tomography(dl.Application):
         return blurred_projections.squeeze(1)  # Remove the channel dimension
 
 
+
+def plots(tomo, gt=None):
+    import matplotlib.pyplot as plt
+
+    z = tomo.latent.detach().cpu().numpy()
+
+    plt.figure(figsize=(4, 4))
+    plt.title("Latent space")
+    plt.scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
+    plt.scatter(z[0, 0], z[0, 1], c='r')  # start_point
+    plt.colorbar()
+    plt.show()
+
+    # 3D plot
+    fig = plt.figure(figsize=(4, 4))
+    ax = fig.add_subplot(111, projection='3d')
+    ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
+    ax.scatter(z[0, 0], z[0, 1], c='r')
+    plt.show()
+
+    # Plot the smoothed distances and peaks
+    smoothed_dists = tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
+    peaks = tomo.rotation_initial_dict['peaks'].cpu().numpy()
+
+    plt.figure(figsize=(4, 4))
+    plt.plot(smoothed_dists)
+    plt.scatter(peaks, smoothed_dists[peaks], c='r')
+    plt.show()
+
+    # Plot the quaternions
+    q1 = tomo.rotation_initial_dict['quaternions'].cpu().numpy()
+
+    plt.figure(figsize=(7, 4))
+    plt.plot(q1[:, 0], label=r'$q_0$', linewidth=2)
+    plt.plot(q1[:, 1], label=r'$q_1$', linewidth=2)
+    plt.plot(q1[:, 2], label=r'$q_2$', linewidth=2)
+    plt.plot(q1[:, 3], label=r'$q_3$', linewidth=2)
+    # Add a vertical line where q1 ends
+    plt.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
+    if gt is not None:
+        plt.plot(gt[:, 0], '--', label=r'$q_0$', linewidth=2)
+        plt.plot(gt[:, 1], '--', label=r'$q_1$', linewidth=2)
+        plt.plot(gt[:, 2], '--', label=r'$q_2$', linewidth=2)
+        plt.plot(gt[:, 3], '--', label=r'$q_3$', linewidth=2)
+    plt.legend()
+    plt.title("Initial Guess vs True Quaternion Components", fontsize=16)
+    plt.show()
+
+
 # Testing the code
 if __name__ == "__main__":
+    import numpy as np
+    data = np.load('../test_data/test_data.npz', allow_pickle=True)
+    projections = torch.tensor(data["projections"], dtype=torch.float32)
+    test_object = torch.tensor(data["volume"], dtype=torch.float32)
+    Q_accum = torch.tensor(data["quaternions"], dtype=torch.float32)
 
     # Create a dummy dataset
-    N = 96
-    projections = torch.rand(64, N, N)
-
+    N = projections.shape[-1]
+  
     # Create the tomography model
-    tomography = Tomography(volume_size=(N, N, N))
+    tomo = Tomography(volume_size=(N, N, N))
 
     # Initialize the parameters
-    tomography.initialize_parameters(projections)
+    tomo.initialize_parameters(projections, normalize=True)
+    
+    # Visualize the latent space and the initial rotations
+    plots(tomo, gt=Q_accum)
+
 
     # Perform a forward pass
-    tomography(0)
+    tomo(0)
 
 
 
