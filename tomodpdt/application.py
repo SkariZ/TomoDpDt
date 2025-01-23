@@ -2,6 +2,7 @@ import deeplay as dl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.data import DataLoader, TensorDataset
 
 from typing import Optional, Sequence#, Callable, List
 
@@ -32,9 +33,6 @@ class Tomography(dl.Application):
         self.optimizer = optimizer
         self.volume_init = volume_init
         super().__init__(**kwargs)
-
-        # Set the VAE model
-        self.vae_model.to(self._device)
 
         # Set the imaging model
         if imaging_model == "projection_model":
@@ -70,12 +68,19 @@ class Tomography(dl.Application):
         if self.vae_model.training:
             self.train_vae(projections)
 
+        # Compute the latent space
         latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
         self.latent = latent_space
+
+        # Initialize the volume
         self.volume = self.initialize_volume()
 
         # Retrieve the initial rotation parameters
-        self.rotation_initial_dict = erfl(latent_space, **kwargs) #Later: add axis also
+        self.rotation_initial_dict = erfl.process_latent_space(
+            z=latent_space, 
+            frames=projections, 
+            **kwargs
+            ) # Later: add axis also
 
         # Set the rotation parameters
         if self.rotation_optim_case == 'quaternion':
@@ -94,31 +99,30 @@ class Tomography(dl.Application):
         # Set the optimizer
         self.optimizer = torch.optim.Adam(self.parameters(), lr=5e-3)
 
-        @self.optimizer.params
-        def params(self):
-            return self.parameters()
-
     def train_vae(self, projections):
+        """
+        Train the VAE model on the given projections.
+        """
+        
+        # Data loader for the VAE model x=projections and y=projections
+        data_loader = DataLoader(
+            TensorDataset(projections, projections), batch_size=32, shuffle=True
+            )
 
-        # Data loader for the VAE model
-        data_loader = torch.utils.data.DataLoader(projections, batch_size=64, shuffle=True)
-
-        # Set the VAE model to training mode
-        self.vae_model.train()
+        # Build the VAE model
+        self.vae_model.build()
 
         # Train the VAE model
-        #self.vae_model.fit(data_loader)
-        import lightning as L
-        trainer = L.Trainer(max_epochs=500, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=10, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
+
+        # Update the VAE model and the needed components and move them to the device
+        self.encoder = self.vae_model.encoder.to(self._device)
+        self.fc_mu = self.vae_model.fc_mu.to(self._device)
 
         # Freeze the VAE model
         for param in self.vae_model.parameters():
             param.requires_grad = False
-
-
-        #for param in self.vae.fc_mu.Parameters():
-        #    param.requires_grad=False
 
     def initialize_volume(self):
         """
@@ -169,8 +173,8 @@ class Tomography(dl.Application):
     def training_step(self, batch, batch_idx):
         #x,y = self.train_preprocess(batch) # batch = ground_truth projections
 
-        yhat = self.forward(batch_idx) #Estimated projections
-        latent_space = self.fc_mu(self.encoder(yhat)) #Estimated latent space
+        yhat = self.forward(batch_idx) # Estimated projections
+        latent_space = self.fc_mu(self.encoder(yhat)) # Estimated latent space
 
         proj_loss, latent_loss, rtv_loss = self.compute_loss(yhat, latent_space, batch, batch_idx)
         tot_loss = proj_loss + latent_loss + rtv_loss
@@ -338,7 +342,7 @@ if __name__ == "__main__":
 
     # Create a dummy dataset
     N = 96
-    projections = torch.rand(10, N, N)
+    projections = torch.rand(64, N, N)
 
     # Create the tomography model
     tomography = Tomography(volume_size=(N, N, N))
@@ -348,3 +352,6 @@ if __name__ == "__main__":
 
     # Perform a forward pass
     tomography(0)
+
+
+
