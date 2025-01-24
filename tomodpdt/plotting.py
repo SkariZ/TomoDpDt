@@ -55,7 +55,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     predicted_object = tomo.volume.detach().cpu()
     projections_pred = tomo.full_forward().detach().cpu().numpy()
     projections_gt = tomo.frames.detach().cpu().numpy()
-    quaternions_pred = tomo.get_quaternions().detach().cpu().numpy()
+    quaternions_pred = tomo.get_quaternions_final().detach().cpu().numpy()
     
 
     # Plot the Predicted_objects axes
