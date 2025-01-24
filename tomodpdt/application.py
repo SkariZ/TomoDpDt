@@ -42,7 +42,7 @@ class Tomography(dl.Application):
         # Set the rotation optimization case, default to "quaternion"
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         
-        # Set the optimizer (if provided)
+        # Set the optimizer (if provided) - not used as of now...
         self.optimizer = optimizer
         
         # Set volume initialization (if provided)
@@ -63,7 +63,6 @@ class Tomography(dl.Application):
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
         self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self._device)
 
-                
     def initialize_parameters(self, projections, **kwargs):
         
         # Check if projections are a tensor
@@ -180,15 +179,15 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    
     def forward(self, idx):
         """
-        Forward pass of the model.
+        Forward pass of the model. Returns the estimated projections for the 
+        given indices by rotating the volume and imaging it.
         """
         volume = self.volume
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         
-        # Normalize quaternions during computation
+        # Normalize quaternions during computation - is done in apply_rotation.
         #quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
 
         batch_size = quaternions.shape[0]
@@ -207,10 +206,11 @@ class Tomography(dl.Application):
 
         yhat = self.forward(idx)  # Estimated projections
         with torch.no_grad():
-            latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))  # Estimated latent space
+            latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))   # Estimated latent space
 
-        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
-        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss
+        (proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss) = self.compute_loss(yhat, latent_space, batch, idx)
+        # Compute the total loss
+        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss
 
         loss = {
             "proj_loss": proj_loss, 
@@ -248,7 +248,7 @@ class Tomography(dl.Application):
             self.get_quaternions(self.rotation_params)
             )
 
-        # Compute the q0 constraint loss
+        # Compute the q0 constraint loss if 0 is in the indices
         if torch.sum(idx == 0) > 0:
             q0_loss = self.q0_constraint_loss(
                 self.get_quaternions(self.rotation_params)[idx == 0]
@@ -256,7 +256,7 @@ class Tomography(dl.Application):
         else:
             q0_loss = torch.tensor(0.0, device=self._device)
 
-        # Compute the rotational trajectory regularization term
+        # Compute the rotational trajectory regularization term if the indices are consecutive
         if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1:
             rtr_loss = self.rotational_trajectory_regularization(
                 self.get_quaternions(self.rotation_params)
@@ -289,7 +289,7 @@ class Tomography(dl.Application):
     def quaternion_validity_loss(self, q):
         """
         Loss to enforce that quaternions remain valid (unit quaternions).
-        
+
         Args:
         - q (torch.Tensor): Tensor of quaternions with shape (N, 4), where N is the number of quaternions.
 
@@ -334,8 +334,8 @@ class Tomography(dl.Application):
 
         # Combine first-order and second-order terms
         reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.shape[0]
-        return reg_terms
 
+        return reg_terms
 
     def get_quaternions(self, rotations=None):
         """
@@ -495,12 +495,13 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=2500, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=1, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
 
     # Plot the training history
     trainer.history.plot()
 
+    # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
 
 

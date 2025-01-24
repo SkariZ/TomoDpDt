@@ -89,7 +89,6 @@ def process_latent_space(
     angle_rotations = torch.zeros(max(peaks), 4)
     angle_rotations[:, 0] = angles[:-1]
 
-
     if initial_axes == 'x':
         angle_rotations[:, 1] = 1  # [angle, 1, 0, 0]
     elif initial_axes == 'y':
@@ -136,6 +135,7 @@ def generate_basis_functions(N_points, num_basis):
     )
     return basis
 
+
 def initialize_basis_functions(basis, quaternions):
     """
     Initialize the basis functions using the initial quaternion values
@@ -146,11 +146,13 @@ def initialize_basis_functions(basis, quaternions):
 
     return coeffs
 
+
 def compute_normalized_distances(z):
     """Compute normalized distances from the first point in latent space."""
     d0 = z[0]  # Reference point (first row)
     dists = torch.sqrt(((z - d0) ** 2).sum(dim=1))
     return dists / dists.max()
+
 
 def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.7, height_factor=0.8):
     """Find peaks in smoothed distance data."""
