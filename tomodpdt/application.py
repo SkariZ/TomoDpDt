@@ -131,7 +131,7 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=100, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=150, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
@@ -466,6 +466,7 @@ class Tomography(dl.Application):
         elif self.rotation_optim_case == 'basis':
             return torch.matmul(self.basis.to(self._device), rotations) 
         
+
 # Testing the code
 if __name__ == "__main__":
     import numpy as np
@@ -483,7 +484,7 @@ if __name__ == "__main__":
     N = projections.shape[-1]
   
     # Create the tomography model
-    tomo = Tomography(volume_size=(N, N, N))
+    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis')
 
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
@@ -495,7 +496,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=1, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=250, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
 
     # Plot the training history
