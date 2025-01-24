@@ -208,7 +208,7 @@ class Tomography(dl.Application):
         with torch.no_grad():
             latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))   # Estimated latent space
 
-        (proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss) = self.compute_loss(yhat, latent_space, batch, idx)
+        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
         # Compute the total loss
         tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss
 
