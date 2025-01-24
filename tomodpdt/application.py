@@ -2,12 +2,14 @@ import deeplay as dl
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.utils.data import DataLoader, TensorDataset, Dataset
+from torch.utils.data import DataLoader, TensorDataset
 
 from typing import Optional, Sequence#, Callable, List
 
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
+
+from deeplay.external import Adam
 
 class Tomography(dl.Application):
     def __init__(self,
@@ -43,7 +45,7 @@ class Tomography(dl.Application):
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         
         # Set the optimizer (if provided) - not used as of now...
-        self.optimizer = optimizer
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=8e-4)
         
         # Set volume initialization (if provided)
         self.volume_init = volume_init
@@ -111,11 +113,14 @@ class Tomography(dl.Application):
         self.rotation_params = nn.Parameter(rotation_params.to(self._device))
         
         # Setting frames to the number of rotations
-        self.frames = projections[:len(rotation_params)]
+        self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
         self.frames = self.frames.squeeze(1)
 
         # Set the optimizer
-        self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
+        # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
+        @self.optimizer.params
+        def params(self):
+            return self.parameters()
 
     def train_vae(self, projections):
         """
@@ -243,15 +248,18 @@ class Tomography(dl.Application):
         # Compute the total variation regularization term
         rtv_loss = self.total_variation_regularization(self.volume)
 
+        # This is the predicted quaternions
+        quaternions_pred = self.get_quaternions(self.rotation_params)[idx]
+
         # Compute the quaternion validity loss
         qv_loss = self.quaternion_validity_loss(
-            self.get_quaternions(self.rotation_params)
+            quaternions_pred
             )
 
         # Compute the q0 constraint loss if 0 is in the indices
         if torch.sum(idx == 0) > 0:
             q0_loss = self.q0_constraint_loss(
-                self.get_quaternions(self.rotation_params)[idx == 0]
+                quaternions_pred[idx == 0]
                 )
         else:
             q0_loss = torch.tensor(0.0, device=self._device)
@@ -259,7 +267,7 @@ class Tomography(dl.Application):
         # Compute the rotational trajectory regularization term if the indices are consecutive
         if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1:
             rtr_loss = self.rotational_trajectory_regularization(
-                self.get_quaternions(self.rotation_params)
+                quaternions_pred
                 )
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
@@ -444,11 +452,11 @@ class Tomography(dl.Application):
         #Set the grid to the device as well...
         self.grid = self.grid.to(self._device)
 
-        batch_size = quaternions.shape[0]
-        estimated_projections = torch.zeros(batch_size, self.N, self.N, device=self._device)
+        # Initialize the estimated projections
+        estimated_projections = torch.zeros(quaternions.shape[0], self.N, self.N, device=self._device)
 
         # Rotate the volume and estimate the projections
-        for i in range(batch_size):
+        for i in range(quaternions.shape[0]):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
             estimated_projections[i] = self.imaging_model(rotated_volume)
 
@@ -462,9 +470,12 @@ class Tomography(dl.Application):
             rotations = self.rotation_params
 
         if self.rotation_optim_case == 'quaternion':
+            rotations = rotations / rotations.norm(dim=-1, keepdim=True)
             return rotations
         elif self.rotation_optim_case == 'basis':
-            return torch.matmul(self.basis.to(self._device), rotations) 
+            rotations = torch.matmul(self.basis.to(self._device), rotations)
+            rotations = rotations / rotations.norm(dim=-1, keepdim=True)
+            return rotations 
         
 
 # Testing the code
@@ -480,11 +491,14 @@ if __name__ == "__main__":
     test_object = torch.tensor(data["volume"], dtype=torch.float32)
     q_gt = torch.tensor(data["quaternions"], dtype=torch.float32)
 
+    #Downsample the projections 4x
+    projections = F.interpolate(projections.unsqueeze(1), scale_factor=0.25, mode='bilinear').squeeze(1)
+
     # Create a dummy dataset
     N = projections.shape[-1]
   
     # Create the tomography model
-    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis')
+    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros')
 
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
@@ -496,11 +510,14 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=250, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
 
     # Plot the training history
-    trainer.history.plot()
+    try:
+        trainer.history.plot()
+    except:
+        print("No history to plot...")
 
     # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)

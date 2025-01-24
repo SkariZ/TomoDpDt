@@ -14,7 +14,7 @@ def process_latent_space(
     min_peaks=2,
     prominence=0.7,
     height_factor=0.8,
-    basis_functions=10,
+    basis_functions=15,
     **kwargs
 ):
     """
