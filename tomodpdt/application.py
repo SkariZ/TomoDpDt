@@ -434,7 +434,7 @@ class Tomography(dl.Application):
 
         return blurred_projections.squeeze(1)  # Remove the channel dimension
 
-    def full_forward(self):
+    def full_forward_final(self):
         """
         Forward pass of the model.
 
@@ -445,6 +445,8 @@ class Tomography(dl.Application):
         Returns:
         - estimated_projections (torch.Tensor): Estimated projections.
         """
+        self.basis = self.basis.to(self._device)
+        self.rotation_params = self.rotation_params.to(self._device)
 
         quaternions = self.get_quaternions(self.rotation_params).to(self._device)
         volume = self.volume.to(self._device)
@@ -487,12 +489,18 @@ if __name__ == "__main__":
     reload(plotting)
 
     data = np.load('../test_data/test_data.npz', allow_pickle=True)
-    projections = torch.tensor(data["projections"], dtype=torch.float32)
-    test_object = torch.tensor(data["volume"], dtype=torch.float32)
-    q_gt = torch.tensor(data["quaternions"], dtype=torch.float32)
+    projections = torch.tensor(data["projections"], dtype=torch.float32) if "projections" in data else None
+    test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
+    q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
-    #Downsample the projections 4x
-    projections = F.interpolate(projections.unsqueeze(1), scale_factor=0.25, mode='bilinear').squeeze(1)
+    #Downsample the projections 2x and downsample the object 2x
+    scale = 0.5
+    projections = F.interpolate(projections.unsqueeze(1), scale_factor=scale, mode='bilinear').squeeze(1)
+
+    try:
+        test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
+    except:
+        test_object = None
 
     # Create a dummy dataset
     N = projections.shape[-1]
@@ -510,8 +518,8 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=N, shuffle=False))
+    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=False))
 
     # Plot the training history
     try:
@@ -521,5 +529,3 @@ if __name__ == "__main__":
 
     # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
-
-

@@ -53,11 +53,10 @@ def plots_initial(tomo, gt=None):
 def plots_optim(tomo, gt_q=None, gt_v=None):
     
     predicted_object = tomo.volume.detach().cpu()
-    projections_pred = tomo.full_forward().detach().cpu().numpy()
+    projections_pred = tomo.full_forward_final().detach().cpu().numpy()
     projections_gt = tomo.frames.detach().cpu().numpy()
     quaternions_pred = tomo.get_quaternions_final().detach().cpu().numpy()
     
-
     # Plot the Predicted_objects axes
     fig, ax = plt.subplots(1, 3, figsize=(10, 3))
     plt.suptitle("Predicted object")
@@ -128,13 +127,75 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         plt.show()
 
     # 2x2 grid of scatter plots for each component of the quaternion
-    fig, ax = plt.subplots(2, 2, figsize=(6, 6))
-    ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0])
-    ax[0, 0].set_title(r'$q_0$')
-    ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1])
-    ax[0, 1].set_title(r'$q_1$')
-    ax[1, 0].scatter(quaternions_pred[:, 2], gt_q[:len(quaternions_pred), 2])
-    ax[1, 0].set_title(r'$q_2$')
-    ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
-    ax[1, 1].set_title(r'$q_3$')
-    plt.show()
+    if gt_q is not None:
+        fig, ax = plt.subplots(2, 2, figsize=(6, 6))
+        ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0])
+        ax[0, 0].set_title(r'$q_0$')
+        ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1])
+        ax[0, 1].set_title(r'$q_1$')
+        ax[1, 0].scatter(quaternions_pred[:, 2], gt_q[:len(quaternions_pred), 2])
+        ax[1, 0].set_title(r'$q_2$')
+        ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
+        ax[1, 1].set_title(r'$q_3$')
+        plt.show()
+
+    # 3D plot of the predicted object
+    visualize_3d_volume(predicted_object.numpy())
+
+    # 3D plot of the ground truth object
+    if gt_v is not None:
+        visualize_3d_volume(gt_v.numpy())
+
+
+def visualize_3d_volume(volume, surface_count=12, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+    """
+    Visualizes a 3D volume as an isosurface using Plotly.
+
+    Parameters:
+        volume (numpy.ndarray): 3D numpy array (volume) to visualize.
+        surface_count (int): Number of isosurfaces to display (default is 15).
+        opacity (float): Opacity of the isosurface (default is 0.5).
+        bgcolor (str): Background color of the plot (default is 'black').
+        camera_position (tuple): Position of the camera in the scene (default is (1.2, 1.2, 1.2)).
+
+    """
+    import plotly.graph_objects as go
+
+    # Generate the x, y, and z coordinate grids for the volume
+    x = np.arange(volume.shape[0]).repeat(volume.shape[1] * volume.shape[2])  # Repeats each x-value across the grid
+    y = np.tile(np.arange(volume.shape[1]).repeat(volume.shape[2]), volume.shape[0])  # Repeats each y-value within z slices
+    z = np.tile(np.arange(volume.shape[2]), volume.shape[0] * volume.shape[1])  # Repeats z-values across the full grid
+
+    # Determine dynamic isosurface bounds based on the volume
+    isomin = volume.min() + 0.1 * (volume.max() - volume.min())
+    isomax = volume.max() - 0.1 * (volume.max() - volume.min())
+
+    # Create the figure with the 3D isosurface
+    fig = go.Figure(data=go.Isosurface(
+        x=x,
+        y=y,
+        z=z,
+        value=volume.flatten(),  # Flatten the volume to 1D for visualization
+        isomin=isomin,  # Adjust to the volume's range
+        isomax=isomax,
+        surface_count=surface_count,  # Number of surfaces to display
+        opacity=opacity,  # Opacity of the isosurface
+        colorscale="Viridis",  # Color scheme
+        caps=dict(x_show=False, y_show=False, z_show=False)  # Hide caps for better 3D visualization
+    ))
+
+    # Adjust the layout for a more fitting view
+    fig.update_layout(
+        scene=dict(
+            camera=dict(
+                eye=dict(x=camera_position[0], y=camera_position[1], z=camera_position[2])  # Adjust the camera's position
+            ),
+            xaxis=dict(range=[0, volume.shape[0]]),
+            yaxis=dict(range=[0, volume.shape[1]]),
+            zaxis=dict(range=[0, volume.shape[2]]),
+            bgcolor=bgcolor  # Set the background color to black (or any color)
+        ),
+        margin=dict(l=0, r=0, b=0, t=0)  # Reduce the margins around the plot
+    )
+
+    fig.show()

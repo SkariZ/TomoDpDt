@@ -12,8 +12,8 @@ def process_latent_space(
     polyorder=2,
     max_peaks=7,
     min_peaks=2,
-    prominence=0.7,
-    height_factor=0.8,
+    prominence=0.5,
+    height_factor=0.75,
     basis_functions=15,
     **kwargs
 ):
@@ -154,7 +154,7 @@ def compute_normalized_distances(z):
     return dists / dists.max()
 
 
-def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.7, height_factor=0.8):
+def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.5, height_factor=0.75):
     """Find peaks in smoothed distance data."""
     height = height_factor * np.max(res)
     distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
@@ -167,7 +167,7 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prom
     peaks = np.append(0, peaks)  # Ensure first peak at index 0
 
     if len(peaks) < min_peaks:
-        peaks = np.append(peaks, len(res))  # Add last peak if necessary
+        peaks = np.append(peaks, len(res)-1)  # Add last peak if necessary
 
     return peaks
 
