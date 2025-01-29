@@ -8,6 +8,10 @@ from typing import Optional, Sequence#, Callable, List
 
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
+import imaging_modality_brightfield as imb
+
+import deeptrack as dt
+so = imb.setup_optics(nsize=96)
 
 from deeplay.external import Adam
 
@@ -201,7 +205,14 @@ class Tomography(dl.Application):
         # Rotate the volume and estimate the projections
         for i in range(batch_size):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
-            estimated_projections[i] = self.imaging_model(rotated_volume)
+
+            #estimated_projections[i] = self.imaging_model(rotated_volume)
+            #Hardcoded for now
+            # Create a detached version for NumPy-based function
+            rotated_volume_np = rotated_volume.detach().cpu().numpy()
+            rotated_volume_img = dt.Image(rotated_volume_np)
+            im = so['optics'].get(rotated_volume_img, so['limits'], so['fields'], **so['filtered_properties']).imag
+            estimated_projections[i] = torch.tensor(im, device=self._device).squeeze(-1)
 
         return estimated_projections
     
@@ -488,14 +499,16 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data.npz', allow_pickle=True)
-    projections = torch.tensor(data["projections"], dtype=torch.float32) if "projections" in data else None
+    data = np.load('../test_data/test_data_b.npz', allow_pickle=True)
+    projections = data["projections"].imag if "projections" in data else None
+    projections = torch.tensor(projections, dtype=torch.float32).squeeze(-1)
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
     q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
     #Downsample the projections 2x and downsample the object 2x
-    scale = 0.5
+    scale =1
     projections = F.interpolate(projections.unsqueeze(1), scale_factor=scale, mode='bilinear').squeeze(1)
+    
 
     try:
         test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
