@@ -84,7 +84,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     plt.suptitle("Predicted projections")
     for i in range(3):
         for j in range(3):
-            im = ax[i, j].imshow(projections_pred[R_idx[i * 3 + j]])
+            im = ax[i, j].imshow(projections_pred[R_idx[i * 3 + j], 0])
             fig.colorbar(im, ax=ax[i, j])
     plt.show()
 
@@ -92,7 +92,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     plt.suptitle("Ground truth projections")
     for i in range(3):
         for j in range(3):
-            im = ax[i, j].imshow(projections_gt[R_idx[i * 3 + j]])
+            im = ax[i, j].imshow(projections_gt[R_idx[i * 3 + j], 0])
             fig.colorbar(im, ax=ax[i, j])
     plt.show()
 

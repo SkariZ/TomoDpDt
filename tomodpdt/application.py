@@ -25,6 +25,7 @@ class Tomography(dl.Application):
                  optimizer=None,
                  volume_init=None,  # Initial guess for volume explicitly
                  **kwargs):
+        
         # Set volume size
         self.N = volume_size[0]
         self.volume_size = volume_size
@@ -61,7 +62,7 @@ class Tomography(dl.Application):
         if self.imaging_model == "projection":
             def projection(volume):
                 # Simple projection summing along one axis (dim=2)
-                return torch.sum(volume, dim=2)
+                return torch.sum(volume, dim=-1)
             self.imaging_model = projection
 
         # Set the grid for rotating the volume
@@ -78,15 +79,19 @@ class Tomography(dl.Application):
         # Move projections to the device
         projections = projections.to(self._device)
 
-        # Normalize projections
-        if 'normalize' in kwargs:
-            if kwargs['normalize']:
-                projections = (projections - projections.min()) / (projections.max() - projections.min())
-        
-        # Add a channel dimension if necessary
-        if projections.dim() == 3:
-            projections = projections.unsqueeze(1)
+        # Set the number of channels
+        self.CH = projections.shape[1]
 
+        if self.CH > 1:
+            # Update the VAE model to handle multiple channels
+            pass
+
+        # Normalize projections
+        if 'normalize' in kwargs and kwargs['normalize']:
+            # Per channel normalization- min-max scaling for each channel
+            for i in range(projections.shape[1]):
+                projections[:, i] = (projections[:, i] - projections[:, i].min()) / (projections[:, i].max() - projections[:, i].min())
+            
         # Train the VAE model if not already trained
         if self.vae_model.training:
             self.train_vae(projections)
@@ -118,7 +123,7 @@ class Tomography(dl.Application):
         
         # Setting frames to the number of rotations
         self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
-        self.frames = self.frames.squeeze(1)
+        #self.frames = self.frames.squeeze(1)
 
         # Set the optimizer
         # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
@@ -200,19 +205,19 @@ class Tomography(dl.Application):
         #quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
 
         batch_size = quaternions.shape[0]
-        estimated_projections = torch.zeros(batch_size, self.N, self.N, device=self._device)
+        estimated_projections = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
 
         # Rotate the volume and estimate the projections
         for i in range(batch_size):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
+            estimated_projections[i] = self.imaging_model(rotated_volume)
 
-            #estimated_projections[i] = self.imaging_model(rotated_volume)
             #Hardcoded for now
             # Create a detached version for NumPy-based function
-            rotated_volume_np = rotated_volume.detach().cpu().numpy()
-            rotated_volume_img = dt.Image(rotated_volume_np)
-            im = so['optics'].get(rotated_volume_img, so['limits'], so['fields'], **so['filtered_properties']).imag
-            estimated_projections[i] = torch.tensor(im, device=self._device).squeeze(-1)
+            # rotated_volume_np = rotated_volume.detach().cpu().numpy()
+            # rotated_volume_img = dt.Image(rotated_volume_np)
+            # im = so['optics'].get(rotated_volume_img, so['limits'], so['fields'], **so['filtered_properties']).imag
+            # estimated_projections[i] = torch.tensor(im, device=self._device).squeeze(-1)
 
         return estimated_projections
     
@@ -222,7 +227,7 @@ class Tomography(dl.Application):
 
         yhat = self.forward(idx)  # Estimated projections
         with torch.no_grad():
-            latent_space = self.fc_mu(self.encoder(yhat.unsqueeze(1)))   # Estimated latent space
+            latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
         proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
         # Compute the total loss
@@ -437,13 +442,10 @@ class Tomography(dl.Application):
         # Reshape kernel to match conv2d input requirements
         kernel = kernel.view(1, 1, kernel_size, kernel_size)
 
-        # Ensure input has a channel dimension
-        projections = projections.unsqueeze(1)  # Shape (N, 1, H, W)
-
         # Apply Gaussian blur
         blurred_projections = F.conv2d(projections, kernel, padding=kernel_size // 2)
 
-        return blurred_projections.squeeze(1)  # Remove the channel dimension
+        return blurred_projections
 
     def full_forward_final(self):
         """
@@ -466,7 +468,7 @@ class Tomography(dl.Application):
         self.grid = self.grid.to(self._device)
 
         # Initialize the estimated projections
-        estimated_projections = torch.zeros(quaternions.shape[0], self.N, self.N, device=self._device)
+        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
 
         # Rotate the volume and estimate the projections
         for i in range(quaternions.shape[0]):
@@ -499,23 +501,27 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data_b.npz', allow_pickle=True)
-    projections = data["projections"].imag if "projections" in data else None
-    projections = torch.tensor(projections, dtype=torch.float32).squeeze(-1)
+    data = np.load('../test_data/test_data.npz', allow_pickle=True)
+    projections = data["projections"] if "projections" in data else None
+    projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
+
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
+    #test_object = test_object.unsqueeze(0)
+
     q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
     #Downsample the projections 2x and downsample the object 2x
-    scale =1
-    projections = F.interpolate(projections.unsqueeze(1), scale_factor=scale, mode='bilinear').squeeze(1)
+    scale = 0.5
+    projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
+    #Duplicate projections so it have 2 channels
+    #projections = torch.cat((projections, projections+0.1), dim=1)
     
-
     try:
         test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
     except:
         test_object = None
 
-    # Create a dummy dataset
+    # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
   
     # Create the tomography model
