@@ -9,10 +9,10 @@ from typing import Optional, Sequence#, Callable, List
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
 import imaging_modality_brightfield as imb
+import vaemod as vm
 
 import deeptrack as dt
-so = imb.setup_optics(nsize=96)
-
+#so = imb.setup_optics(nsize=96)
 from deeplay.external import Adam
 
 class Tomography(dl.Application):
@@ -84,7 +84,13 @@ class Tomography(dl.Application):
 
         if self.CH > 1:
             # Update the VAE model to handle multiple channels
-            pass
+            vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2)
+            self.vae_model.encoder=vae.encoder
+            self.vae_model.decoder=vae.decoder
+            self.vae_model.fc_mu=vae.fc_mu
+            self.vae_model.fc_var=vae.fc_var
+            self.vae_model.fc_dec=vae.fc_dec
+            
 
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
@@ -514,7 +520,7 @@ if __name__ == "__main__":
     scale = 0.5
     projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
     #Duplicate projections so it have 2 channels
-    #projections = torch.cat((projections, projections+0.1), dim=1)
+    projections = torch.cat((projections, projections+0.1), dim=1)
     
     try:
         test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
