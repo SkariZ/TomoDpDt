@@ -2,15 +2,16 @@ import torch
 import torch.nn as nn
 
 class NeuralMicroscope(nn.Module):
-    def __init__(self, num_params=6, xs=64, ys=64):  # Dynamically set xs, ys
+    def __init__(self, num_params=6, xs=64, ys=64, dropout=0.1):  # Dynamically set xs, ys
         super(NeuralMicroscope, self).__init__()
         self.xs, self.ys = xs, ys  # Store for later use
+        self.dropout = dropout
 
         # 3D Feature Extraction (keeping xs, ys unchanged)
         self.feature_extractor = nn.Sequential(
-            nn.Conv3d(1, 32, kernel_size=3, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv3d(32, 64, kernel_size=3, padding=1), nn.LeakyReLU(0.2),
-            nn.Conv3d(64, 1, kernel_size=3, padding=1), nn.LeakyReLU(0.2)
+            nn.Conv3d(1, 64, kernel_size=3, padding=1), nn.BatchNorm3d(64), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
+            nn.Conv3d(64, 64, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
+            nn.Conv3d(64, 1, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout)
         )
 
         # Adaptive pooling to remove depth but keep (xs, ys)
@@ -18,8 +19,8 @@ class NeuralMicroscope(nn.Module):
 
         # Continuous Parameter Processing - Dynamic xs, ys output!
         self.param_fc = nn.Sequential(
-            nn.Linear(num_params, 32), nn.LeakyReLU(0.2),
-            nn.Linear(32, xs * ys)  # Output size depends on input spatial size
+            nn.Linear(num_params, 32), nn.LeakyReLU(0.1), nn.Dropout(self.dropout),
+            nn.Linear(32, xs * ys), nn.Dropout(self.dropout)  # Output size depends on input spatial size
         )
 
         # Fusion Layer (Concatenation instead of multiplication)
@@ -27,7 +28,9 @@ class NeuralMicroscope(nn.Module):
 
         # Output Refinement (to 2-channel image)
         self.output_refinement = nn.Sequential(
-            nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.LeakyReLU(0.2),
+            nn.Conv2d(64, 32, kernel_size=3, padding=1), 
+            nn.LeakyReLU(0.1), 
+            nn.Dropout2d(self.dropout),
             nn.Conv2d(32, 2, kernel_size=3, padding=1)  # 2-channel output
         )
 
