@@ -11,7 +11,9 @@ class NeuralMicroscope(nn.Module):
         self.feature_extractor = nn.Sequential(
             nn.Conv3d(1, 64, kernel_size=3, padding=1), nn.BatchNorm3d(64), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
             nn.Conv3d(64, 64, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
-            nn.Conv3d(64, 1, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout)
+            nn.Conv3d(64, 32, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
+            nn.Conv3d(32, 32, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout),
+            nn.Conv3d(32, 1, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout3d(self.dropout)
         )
 
         # Adaptive pooling to remove depth but keep (xs, ys)

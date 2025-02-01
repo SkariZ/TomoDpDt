@@ -98,7 +98,7 @@ def simulate_training_samples(magnification_range, wavelength_range, resolution_
         if volumes is not None:
 
             # 50 % chance of getting a random object
-            if torch.rand(1) > 0.5:
+            if torch.rand(1) > 0.0:
                 object = volumes[torch.randint(0, volumes.shape[0], (1,))]
             else:
                 object = object_getter.get_random_objects(
@@ -143,6 +143,7 @@ def manual_data_get(string):
 
     return volumes
 
+
 if __name__ == "__main__":
 
     num_params = 4  # Magnification, wavelength, resolution, NA
@@ -177,7 +178,7 @@ if __name__ == "__main__":
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     model.to(device)
 
-    optimizer = torch.optim.Adam(model.parameters(), lr=5e-4)
+    optimizer = torch.optim.Adam(model.parameters(), lr=8e-4)
     criterion = criterion = nn.SmoothL1Loss(beta=0.1) # nn.MSELoss()
 
     #Costum loss
@@ -208,7 +209,7 @@ if __name__ == "__main__":
 
         data_loader = DataLoader(
             TensorDataset(x_3d, params, y_2d), 
-            batch_size=32, shuffle=True
+            batch_size=16, shuffle=True
             )
 
         total_loss = 0
