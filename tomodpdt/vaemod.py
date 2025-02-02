@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 
-
 import deeplay as dl
 
 class ConvVAE(nn.Module):
@@ -9,7 +8,7 @@ class ConvVAE(nn.Module):
             self,
             input_shape,
             latent_dim,
-            conv_channels=[32, 64, 96],
+            conv_channels=[32, 64, 64],
             dense_dim=128,
             activation='celu',
             output_activation='sigmoid',
@@ -121,12 +120,25 @@ class ConvVAE(nn.Module):
             self.get_activation(self.output_activation)
             )
         return decoder
-    
+
+
+class Dummy3d2d(nn.Module):
+    def __init__(self):
+        super(Dummy3d2d, self).__init__()
+
+    def forward(self, x):
+        #Return projection of the 3D volume
+        return x.sum(dim=-1)
 
 
 if __name__ == "__main__":
 
-    N = 64
+    #Test dummy 3D to 2D model
+    dummy = Dummy3d2d()
+    x = torch.randn(64, 64, 64)
+    print(dummy(x).shape)
+
+    N = 48
 
     vae = ConvVAE((2, N, N), latent_dim=2)
 

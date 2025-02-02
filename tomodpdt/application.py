@@ -216,8 +216,15 @@ class Tomography(dl.Application):
         # Rotate the volume and estimate the projections
         for i in range(batch_size):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
-            estimated_projections[i] = self.imaging_model(rotated_volume)
 
+            #Check if imaging model is a nn.Module
+            if isinstance(self.imaging_model, nn.Module):
+                estimated_projections[i] = self.imaging_model(rotated_volume)
+
+            #Check if imaging model is a function or a module
+            elif callable(self.imaging_model):
+                estimated_projections[i] = self.imaging_model(rotated_volume)
+            
             #Hardcoded for now
             # Create a detached version for NumPy-based function
             # rotated_volume_np = rotated_volume.detach().cpu().numpy()
@@ -479,7 +486,13 @@ class Tomography(dl.Application):
         # Rotate the volume and estimate the projections
         for i in range(quaternions.shape[0]):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
-            estimated_projections[i] = self.imaging_model(rotated_volume)
+             #Check if imaging model is a nn.Module
+            if isinstance(self.imaging_model, nn.Module):
+                with torch.no_grad():
+                    estimated_projections[i] = self.imaging_model(rotated_volume)
+            #Check if imaging model is a function or a module
+            elif callable(self.imaging_model):
+                estimated_projections[i] = self.imaging_model(rotated_volume)
 
         return estimated_projections
     
@@ -527,11 +540,14 @@ if __name__ == "__main__":
     except:
         test_object = None
 
+    # Dummy Imaging model
+    imaging_model = vm.Dummy3d2d()
+
     # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
   
     # Create the tomography model
-    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros')
+    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros', imaging_model=imaging_model)
 
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
