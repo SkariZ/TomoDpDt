@@ -6,7 +6,7 @@ import deeplay as dl
 import deeptrack as dt
 from torch.utils.data import DataLoader, TensorDataset
 
-import model as m
+import modelv2 as m
 import object_getter
 import imaging_modality_brightfield as imb
 
@@ -76,7 +76,7 @@ def simulate_training_samples(magnification_range, wavelength_range, resolution_
 
     for i in range(n_samples):
         
-        if True:
+        if False:
             magnification = torch.tensor([1.0])
             wavelength = torch.tensor([532e-9])
             resolution = torch.tensor([100e-9])
@@ -102,7 +102,7 @@ def simulate_training_samples(magnification_range, wavelength_range, resolution_
         if volumes is not None:
 
             # 50 % chance of getting a random object
-            if torch.rand(1) > 0.0:
+            if torch.rand(1) > 0.3:
                 object = volumes[torch.randint(0, volumes.shape[0], (1,))]
             else:
                 object = object_getter.get_random_objects(
@@ -160,15 +160,15 @@ if __name__ == "__main__":
     volume_size = 64
 
     # Hyperparameters
-    latent_dim = 32  # Size of the noise vector
+    latent_dim = 64  # Size of the noise vector
     num_params = 4   # Number of continuous parameters
     epochs = 10000   # Training iterations
     batch_size = 8   # Batch size
-    lr = 0.0002      # Learning rate
+    lr = 1e-4      # Learning rate
 
     # Initialize models
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    generator = m.NeuralMicroscope(num_params + latent_dim).to(device)
+    generator = m.NeuralMicroscope(num_params = num_params + latent_dim).to(device)
     discriminator = m.Discriminator(num_params).to(device)
 
     # Loss function and optimizers
@@ -265,7 +265,7 @@ if __name__ == "__main__":
             g_loss = criterion(fake_preds, real_labels)  # Wants D to classify fake as real
 
             # Optional: Add L1 loss for smooth image output
-            g_l1 = custom_loss(fake_images, real_images) * 10  # Weight = 10
+            g_l1 = l1_loss(fake_images, real_images) * 10  # Weight = 10
             g_loss += g_l1
 
             # Backprop for Generator
@@ -274,9 +274,65 @@ if __name__ == "__main__":
 
         # Print losses every few epochs
         if epoch % 1 == 0:
-            print(f"Epoch [{epoch}/{epochs}] | D Loss: {d_loss.item():.4f} | G Loss: {g_loss.item():.4f}")
+            print(f"Epoch [{epoch}/{epochs}] | D Loss: {d_loss.item():.4f} | G Loss: {g_loss.item():.4f}, L1 Loss: {g_l1.item():.4f}, d_real_loss: {d_real_loss.item():.4f}, d_fake_loss: {d_fake_loss.item():.4f}")
 
     print("Training complete!")
+
+    # Test the model
+    
+    # Set the model to evaluation mode
+    generator.eval()
+
+    for _ in range(5):
+        x_3d, y_2d, params = simulate_training_samples(
+            magnification_range, 
+            wavelength_range, 
+            resolution_range, 
+            NA_range, 
+            volume_size, 
+            n_samples=2,
+            volumes=volumes
+            )
+        
+        x_3d = x_3d.to(device)
+        params = params.to(device)
+        y_2d = y_2d.to(device)
+
+        #Plot the
+        plt.figure(figsize=(10, 5))
+        plt.suptitle("Real images")
+        plt.subplot(1, 2, 1)
+        plt.imshow(y_2d[0, 0].detach().cpu().numpy())
+        plt.colorbar()
+        plt.title("Real")
+        plt.subplot(1, 2, 2)
+        plt.imshow(y_2d[0, 1].detach().cpu().numpy())
+        plt.colorbar()
+        plt.title("Imaginary")
+        plt.show()
+
+        z = torch.randn(2, latent_dim, device=device)  # Shape: [1, latent_dim]
+        fake_input = torch.cat([params, z], dim=1)  # Combine params + noise
+
+        output = generator(x_3d, fake_input)
+
+        #Plot the output
+        plt.figure(figsize=(10, 5))
+        plt.suptitle("Generated images")
+        plt.subplot(1, 2, 1)
+        plt.imshow(output[0, 0].detach().cpu().numpy())
+        plt.colorbar()
+        plt.title("Real")
+        plt.subplot(1, 2, 2)
+        plt.imshow(output[0, 1].detach().cpu().numpy())
+        plt.colorbar()
+        plt.title("Imaginary")
+        plt.show()
+
+
+
+    
+
 
 
 if False:
