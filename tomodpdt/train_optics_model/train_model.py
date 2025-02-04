@@ -19,6 +19,7 @@ NORMALIZATION_FACTORS = {
     'NA': (0.7, 1.3)
 }
 
+
 def normalize_params(params, normalization_factors):
     
     magnification_min, magnification_max = normalization_factors['magnification']
@@ -32,6 +33,7 @@ def normalize_params(params, normalization_factors):
     NA = (params[:, 3] - NA_min) / (NA_max - NA_min)
 
     return torch.stack([magnification, wavelength, resolution, NA], dim=1)
+
 
 def simulation(optics, object):
     """
@@ -51,6 +53,7 @@ def simulation(optics, object):
 
     return image
 
+
 def get_optics(NA, wavelength, resolution, magnification):
 
     optics = imb.setup_optics(
@@ -63,6 +66,7 @@ def get_optics(NA, wavelength, resolution, magnification):
         )
     
     return optics
+
 
 def simulate_training_samples(magnification_range, wavelength_range, resolution_range, NA_range, volume_size, n_samples=32, volumes=None):
 
@@ -143,8 +147,139 @@ def manual_data_get(string):
 
     return volumes
 
-
 if __name__ == "__main__":
+    import torch
+    import torch.nn as nn
+    import torch.optim as optim
+
+    magnification_range = (1, 5)
+    wavelength_range = (400e-9, 700e-9)
+    resolution_range = (800e-10, 300e-9)
+    NA_range = (0.7, 1.3)
+
+    volume_size = 64
+
+    # Hyperparameters
+    latent_dim = 32  # Size of the noise vector
+    num_params = 4   # Number of continuous parameters
+    epochs = 10000   # Training iterations
+    batch_size = 8   # Batch size
+    lr = 0.0002      # Learning rate
+
+    # Initialize models
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    generator = m.NeuralMicroscope(num_params + latent_dim).to(device)
+    discriminator = m.Discriminator(num_params).to(device)
+
+    # Loss function and optimizers
+    criterion = nn.BCELoss()  # Binary Cross Entropy Loss
+    l1_loss = nn.L1Loss()  # Optional: L1 loss for smoothness
+    g_optimizer = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+    d_optimizer = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+
+    # Labels
+    real_label = 1.0
+    fake_label = 0.0
+
+    #number of parameters in the model
+    print(sum(p.numel() for p in generator.parameters() if p.requires_grad))
+
+    volumes = manual_data_get("potato96_1000.npz")
+
+    # Generate training sample
+    x_3d, y_2d, params = simulate_training_samples(
+        magnification_range, 
+        wavelength_range, 
+        resolution_range, 
+        NA_range, 
+        volume_size, 
+        n_samples=64,
+        volumes=volumes
+        )
+
+    #Costum loss
+    def custom_loss(output, target, crop=4):
+        #Crop the output to avoid big errors at the edges
+        output = output[:, :, crop:-crop, crop:-crop]
+        target = target[:, :, crop:-crop, crop:-crop]
+        return l1_loss(output, target)
+
+    # Training Loop
+    for epoch in range(epochs):
+
+        if epoch % 5 == 0:
+            x_3d, y_2d, params = simulate_training_samples(
+                magnification_range, 
+                wavelength_range, 
+                resolution_range, 
+                NA_range, 
+                volume_size, 
+                n_samples=128,
+                volumes=volumes
+                )
+
+            x_3d = x_3d.to(device)
+            params = params.to(device)
+            y_2d = y_2d.to(device)
+
+            dataloader = DataLoader(
+                TensorDataset(x_3d, params, y_2d), 
+                batch_size=batch_size, shuffle=True
+                )
+
+        for i, (real_3d_volumes, params, real_images,) in enumerate(dataloader):  
+            real_3d_volumes = real_3d_volumes.to(device)  # Shape: [B, 1, xs, ys, zs]
+            real_images = real_images.to(device)  # Shape: [B, 2, xs, ys]
+            params = params.to(device)  # Shape: [B, num_params]
+
+            # Generate random noise (z)
+            z = torch.randn(batch_size, latent_dim, device=device)  # Shape: [B, latent_dim]
+
+            ### Train Discriminator ###
+            d_optimizer.zero_grad()
+            
+            # Forward pass real images
+            real_labels = torch.full((batch_size, 1), real_label, device=device)
+            real_preds = discriminator(real_images, params)  # Shape: [B, 1]
+            d_real_loss = criterion(real_preds, real_labels)  # BCE loss
+
+            # Generate fake images
+            fake_input = torch.cat([params, z], dim=1)  # Combine params + noise
+            fake_images = generator(real_3d_volumes, fake_input)  # Fake images
+            
+            # Forward pass fake images
+            fake_labels = torch.full((batch_size, 1), fake_label, device=device)
+            fake_preds = discriminator(fake_images.detach(), params)
+            d_fake_loss = criterion(fake_preds, fake_labels)
+
+            # Backprop for Discriminator
+            d_loss = d_real_loss + d_fake_loss
+            d_loss.backward()
+            d_optimizer.step()
+
+            ### Train Generator ###
+            g_optimizer.zero_grad()
+
+            # Forward pass fake images (again)
+            fake_preds = discriminator(fake_images, params)  # Try to fool D
+            g_loss = criterion(fake_preds, real_labels)  # Wants D to classify fake as real
+
+            # Optional: Add L1 loss for smooth image output
+            g_l1 = custom_loss(fake_images, real_images) * 10  # Weight = 10
+            g_loss += g_l1
+
+            # Backprop for Generator
+            g_loss.backward()
+            g_optimizer.step()
+
+        # Print losses every few epochs
+        if epoch % 1 == 0:
+            print(f"Epoch [{epoch}/{epochs}] | D Loss: {d_loss.item():.4f} | G Loss: {g_loss.item():.4f}")
+
+    print("Training complete!")
+
+
+if False:
 
     num_params = 4  # Magnification, wavelength, resolution, NA
 
@@ -179,7 +314,7 @@ if __name__ == "__main__":
     model.to(device)
 
     optimizer = torch.optim.Adam(model.parameters(), lr=8e-4)
-    criterion = criterion = nn.SmoothL1Loss(beta=0.1) # nn.MSELoss()
+    criterion = nn.SmoothL1Loss(beta=0.1) # nn.MSELoss()
 
     #Costum loss
     def custom_loss(output, target, crop=4):
