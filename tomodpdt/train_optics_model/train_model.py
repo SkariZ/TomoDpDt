@@ -68,7 +68,7 @@ def get_optics(NA, wavelength, resolution, magnification):
     return optics
 
 
-def simulate_training_samples(magnification_range, wavelength_range, resolution_range, NA_range, volume_size, n_samples=32, volumes=None):
+def simulate_training_samples(magnification_range, wavelength_range, resolution_range, NA_range, volume_size, n_samples=32, volumes=None, crop=4):
 
     x_3d = torch.zeros(n_samples, 1, volume_size, volume_size, volume_size)
     y_2d = torch.zeros(n_samples, 2, volume_size, volume_size)
@@ -102,7 +102,7 @@ def simulate_training_samples(magnification_range, wavelength_range, resolution_
         if volumes is not None:
 
             # 50 % chance of getting a random object
-            if torch.rand(1) > 0.3:
+            if torch.rand(1) > 0.0:
                 object = volumes[torch.randint(0, volumes.shape[0], (1,))]
             else:
                 object = object_getter.get_random_objects(
@@ -115,6 +115,13 @@ def simulate_training_samples(magnification_range, wavelength_range, resolution_
 
         # Simulate the imaging process
         image = simulation(optics, object)
+
+        #Crop edges to black. Ie. set the edges to 0
+        if crop > 0:
+            image[:, :crop] = 0 + 0j
+            image[:, -crop:] = 0 + 0j
+            image[:crop, :] = 0 + 0j
+            image[-crop:, :] = 0 + 0j
 
         # Set the object to the volume
         # Normalize it so 1.33 is 0 and 1.6 is 1
@@ -160,22 +167,25 @@ if __name__ == "__main__":
     volume_size = 64
 
     # Hyperparameters
-    latent_dim = 64  # Size of the noise vector
+    latent_dim = 32  # Size of the noise vector
     num_params = 4   # Number of continuous parameters
-    epochs = 10000   # Training iterations
-    batch_size = 8   # Batch size
-    lr = 1e-4      # Learning rate
+    epochs = 2000   # Training iterations
+    batch_size = 16   # Batch size
+    lr = 1e-3      # Learning rate
 
     # Initialize models
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    generator = m.NeuralMicroscope(num_params = num_params + latent_dim).to(device)
+    generator = m.NeuralMicroscope(num_params=num_params + latent_dim).to(device)
     discriminator = m.Discriminator(num_params).to(device)
 
     # Loss function and optimizers
     criterion = nn.BCELoss()  # Binary Cross Entropy Loss
     l1_loss = nn.L1Loss()  # Optional: L1 loss for smoothness
-    g_optimizer = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
-    d_optimizer = optim.Adam(discriminator.parameters(), lr=lr, betas=(0.5, 0.999))
+    #g_optimizer = optim.Adam(generator.parameters(), lr=lr, betas=(0.5, 0.999))
+    d_optimizer = torch.optim.SGD(discriminator.parameters(), lr=lr, momentum=0.9)
+
+    g_optimizer = torch.optim.SGD(generator.parameters(), lr=lr, momentum=0.9)
+
 
     # Labels
     real_label = 1.0
@@ -205,6 +215,9 @@ if __name__ == "__main__":
         return l1_loss(output, target)
 
     # Training Loop
+    generator.train()
+    g_loss_total = []
+    d_loss_total = []
     for epoch in range(epochs):
 
         if epoch % 5 == 0:
@@ -227,7 +240,7 @@ if __name__ == "__main__":
                 batch_size=batch_size, shuffle=True
                 )
 
-        for i, (real_3d_volumes, params, real_images,) in enumerate(dataloader):  
+        for i, (real_3d_volumes, params, real_images) in enumerate(dataloader):  
             real_3d_volumes = real_3d_volumes.to(device)  # Shape: [B, 1, xs, ys, zs]
             real_images = real_images.to(device)  # Shape: [B, 2, xs, ys]
             params = params.to(device)  # Shape: [B, num_params]
@@ -265,12 +278,20 @@ if __name__ == "__main__":
             g_loss = criterion(fake_preds, real_labels)  # Wants D to classify fake as real
 
             # Optional: Add L1 loss for smooth image output
-            g_l1 = l1_loss(fake_images, real_images) * 10  # Weight = 10
+            g_l1 = l1_loss(fake_images, real_images) * 100  # Weigh
             g_loss += g_l1
 
             # Backprop for Generator
             g_loss.backward()
+
+            #Clip gradients by their norm
+            torch.nn.utils.clip_grad_norm_(generator.parameters(), 1)
+
             g_optimizer.step()
+
+            # Save losses
+            g_loss_total.append(g_loss.item())
+            d_loss_total.append(d_loss.item())
 
         # Print losses every few epochs
         if epoch % 1 == 0:
@@ -329,7 +350,9 @@ if __name__ == "__main__":
         plt.title("Imaginary")
         plt.show()
 
-
+    
+    #Set generator to training mode
+    generator.train()
 
     
 

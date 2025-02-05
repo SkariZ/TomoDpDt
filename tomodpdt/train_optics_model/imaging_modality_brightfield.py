@@ -53,14 +53,13 @@ def setup_optics(nsize, NA=0.7, wavelength=532e-9, resolution=100e-9, magnificat
 
 if __name__ == "__main__":
 
-    nsize = 96
+    nsize = 64
     optics_setup = setup_optics(nsize)
 
     #Create a random object, a cube with a smaller cube inside
-    object = np.zeros((96, 96, 96)) + 1.33
-    object[16:80, 16:80, 16:80] = 1.4
-    object[32:64, 32:64, 32:64] = 1.5
-    object[40:56, 40:56, 40:56] = 1.6
+    object = np.zeros((nsize, nsize, nsize)) + 1.33
+    object[16:48, 16:48, 16:48] = 1.4
+
 
     #Scale object to 
 

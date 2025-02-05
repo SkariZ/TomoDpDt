@@ -11,7 +11,7 @@ class Discriminator(nn.Module):
 
         # 2D Feature Extraction (keeping xs, ys unchanged)
         self.feature_extractor = nn.Sequential(
-            nn.Conv2d(2, 64, kernel_size=3, padding=1), nn.BatchNorm2d(64), nn.LeakyReLU(0.1), nn.Dropout2d(self.dropout),
+            nn.Conv2d(2, 64, kernel_size=3, padding=1), nn.InstanceNorm2d(64), nn.LeakyReLU(0.1), nn.Dropout2d(self.dropout),
             nn.Conv2d(64, 64, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout2d(self.dropout),
             nn.MaxPool2d(2),
             nn.Conv2d(64, 32, kernel_size=3, padding=1), nn.LeakyReLU(0.1), nn.Dropout2d(self.dropout),
@@ -29,7 +29,7 @@ class Discriminator(nn.Module):
         # Fusion Layer (Concatenation instead of multiplication)
         self.fusion_fc = nn.Conv2d(2, 16, kernel_size=3, padding=1)#
 
-        # Output Refinement (to 2-channel image)
+        # Output 
         self.output_refinement = nn.Sequential(
             nn.Conv2d(16, 16, kernel_size=3, padding=1), 
             nn.LeakyReLU(0.1), 
@@ -81,11 +81,10 @@ class NeuralMicroscope(nn.Module):
         self.decoder4 = self.conv_block(128 + 128, 128)
         self.decoder3 = self.conv_block(128 + 128, 128)
         self.decoder2 = self.conv_block(64 + 128, 64)
-        self.decoder1 = self.conv_block(64 + size, size)
+        self.decoder1 = self.conv_block(64 + size, 1)
 
         # Final output layer (2D output with 2 channels)
-        self.conv3d_to_2d = self.conv_block(size, 1)
-        self.final_conv = nn.Conv2d(size, out_channels, kernel_size=1)
+        self.final_conv = self.conv_block2d(size, out_channels)
 
         self.param_fc = nn.Sequential(
                 nn.Linear(num_params, 32), nn.LeakyReLU(0.1), nn.Dropout(self.dropout),
@@ -96,10 +95,27 @@ class NeuralMicroscope(nn.Module):
     def conv_block(self, in_channels, out_channels):
         return nn.Sequential(
             nn.Conv3d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.InstanceNorm3d(out_channels),
             nn.LeakyReLU(0.1),
+            nn.Dropout3d(self.dropout),
             nn.Conv3d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.InstanceNorm3d(out_channels),
             nn.LeakyReLU(0.1),
+            nn.Dropout3d(self.dropout),
         )
+    
+    def conv_block2d(self, in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1),
+            nn.InstanceNorm2d(out_channels),
+            nn.LeakyReLU(0.1),
+            nn.Dropout2d(self.dropout),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1),
+            nn.InstanceNorm2d(out_channels),
+            nn.LeakyReLU(0.1),
+            nn.Dropout2d(self.dropout),
+        )
+
 
     def forward(self, x, continuous_params):
 
@@ -128,14 +144,9 @@ class NeuralMicroscope(nn.Module):
         dec2 = self.decoder2(torch.cat([F.interpolate(dec3, scale_factor=2, mode='trilinear', align_corners=True), enc2], 1))
         dec1 = self.decoder1(torch.cat([F.interpolate(dec2, scale_factor=2, mode='trilinear', align_corners=True), enc1], 1))
 
-        # Output layer (convert 3D output to 2D)
-        # Remove depth dimension to convert the output from 3D to 2D
-       
-        dec1_2d = self.conv3d_to_2d(dec1)
+        # Remove the channel dimension in 3d to make it 2d
+        dec1_2d = dec1.squeeze(1)
 
-        #squeeze the depth dimension
-        dec1_2d = dec1_2d.squeeze()
-    
         # Now dec1_2d has shape [batch_size, 64, height, width], and is compatible with Conv2d
         return self.final_conv(dec1_2d)
 
