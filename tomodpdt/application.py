@@ -151,7 +151,7 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=150, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=250, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
