@@ -8,7 +8,7 @@ from typing import Optional, Sequence#, Callable, List
 
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
-import imaging_modality_brightfield as imb
+import imaging_modality_brightfield_torch as imb
 import vaemod as vm
 
 import deeptrack as dt
@@ -42,7 +42,7 @@ class Tomography(dl.Application):
         
         # Determine the device (cuda if available, else cpu)
         self._device = torch.device("cuda" if torch.cuda.is_available() else getattr(vae_model, "device", "cpu"))
-        
+        #self._device = torch.device("cpu")
         # Set initial volume if provided, otherwise default to "zeros"
         self.initial_volume = initial_volume if initial_volume is not None else "zeros"
         
@@ -185,7 +185,7 @@ class Tomography(dl.Application):
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device))
+            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device)+1.33)
 
         elif self.initial_volume == 'constant':
             self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device))
@@ -219,12 +219,17 @@ class Tomography(dl.Application):
 
             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
-                estimated_projections[i] = self.imaging_model(rotated_volume)
+                estimated_projection = self.imaging_model(rotated_volume)
 
-            #Check if imaging model is a function or a module
-            elif callable(self.imaging_model):
-                estimated_projections[i] = self.imaging_model(rotated_volume)
-            
+                #Check if estimated_projections has a function _value
+                if hasattr(estimated_projection, '_value'):
+                    estimated_projection = torch.concatenate(
+                        (estimated_projection._value.real, estimated_projection._value.imag)
+                        ,axis=-1)
+                    estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+
+                estimated_projections[i] = estimated_projection
+
             #Hardcoded for now
             # Create a detached version for NumPy-based function
             # rotated_volume_np = rotated_volume.detach().cpu().numpy()
@@ -487,12 +492,18 @@ class Tomography(dl.Application):
         for i in range(quaternions.shape[0]):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
              #Check if imaging model is a nn.Module
+
             if isinstance(self.imaging_model, nn.Module):
-                with torch.no_grad():
-                    estimated_projections[i] = self.imaging_model(rotated_volume)
-            #Check if imaging model is a function or a module
-            elif callable(self.imaging_model):
-                estimated_projections[i] = self.imaging_model(rotated_volume)
+                estimated_projection = self.imaging_model(rotated_volume)
+
+                #Check if estimated_projections has a function _value
+                if hasattr(estimated_projection, '_value'):
+                    estimated_projection = torch.concatenate(
+                        (estimated_projection._value.real, estimated_projection._value.imag)
+                        ,axis=-1)
+                    estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+
+                estimated_projections[i] = estimated_projection
 
         return estimated_projections
     
@@ -520,9 +531,13 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data.npz', allow_pickle=True)
+    data = np.load('../test_data/test_data_b.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
-    projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
+    #projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
+    # Projections is a real and imaginary part of the projections
+    
+    projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
+    projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
 
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
     #test_object = test_object.unsqueeze(0)
@@ -532,8 +547,6 @@ if __name__ == "__main__":
     #Downsample the projections 2x and downsample the object 2x
     scale = 0.5
     projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
-    #Duplicate projections so it have 2 channels
-    projections = torch.cat((projections, projections+0.1), dim=1)
     
     try:
         test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
@@ -541,7 +554,9 @@ if __name__ == "__main__":
         test_object = None
 
     # Dummy Imaging model
-    imaging_model = vm.Dummy3d2d()
+    #imaging_model = vm.Dummy3d2d()
+    optics_setup = imb.setup_optics(nsize=48)
+    imaging_model = imb.imaging_model(optics_setup)
 
     # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
@@ -559,7 +574,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=100, accelerator="auto",log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=False))
 
     # Plot the training history
@@ -570,3 +585,7 @@ if __name__ == "__main__":
 
     # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
+
+
+    #Check if tomo.volume has gradients
+    print(tomo.volume.grad)
