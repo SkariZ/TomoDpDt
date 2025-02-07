@@ -10,7 +10,7 @@ class ConvVAE(nn.Module):
             latent_dim,
             conv_channels=[32, 64, 64],
             dense_dim=128,
-            activation='celu',
+            activation='lrelu',
             output_activation='sigmoid',
             dropout=0.0,
             ):
@@ -38,8 +38,6 @@ class ConvVAE(nn.Module):
         self.fc_var = dl.MultiLayerPerceptron(self.flattened_size, [32, 32], latent_dim)
 
         self.fc_dec = dl.MultiLayerPerceptron(latent_dim, [32, 32], self.flattened_size)
-
-
 
     def get_activation(self, activation):
         if activation == 'relu':
@@ -89,6 +87,7 @@ class ConvVAE(nn.Module):
             nn.MaxPool2d(2, 2),
             nn.Conv2d(self.conv_channels[1], self.conv_channels[2], 3, 1, 1),
             self.get_activation(self.activation),
+            nn.Dropout(self.dropout),
             nn.Conv2d(self.conv_channels[1], self.conv_channels[2], 3, 1, 1),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout),
@@ -100,8 +99,7 @@ class ConvVAE(nn.Module):
     def build_decoder(self):
         """
         Build the decoder.
-        """
-        
+        """ 
         decoder = nn.Sequential(
             nn.Unflatten(1, (self.conv_channels[2], self.H[0], self.H[1])),
             self.get_activation(self.activation),
@@ -114,7 +112,7 @@ class ConvVAE(nn.Module):
             nn.Dropout(self.dropout),
             nn.ConvTranspose2d(self.conv_channels[0], self.input_shape[0], 3, 2, 1),
 
-            #Resize the output to the original size
+            # Resize the output to the original size
             nn.Upsample(size=(self.input_shape[1], self.input_shape[2]), mode='bilinear'),
 
             self.get_activation(self.output_activation)
@@ -138,7 +136,7 @@ if __name__ == "__main__":
     x = torch.randn(64, 64, 64)
     print(dummy(x).shape)
 
-    N = 48
+    N = 64
 
     vae = ConvVAE((2, N, N), latent_dim=2)
 
@@ -164,3 +162,6 @@ if __name__ == "__main__":
     #decoder should take the input of the fc_dec and return the output of the decoder
     print(vae_model.decoder(vae_model.fc_dec(vae_model.fc_mu(vae_model.encoder(x)))).shape)
     
+
+    #Count the number of parameters
+    print(sum(p.numel() for p in vae_model.parameters()))
