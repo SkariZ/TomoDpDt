@@ -151,7 +151,7 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=250, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=2000, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
@@ -574,7 +574,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=100, accelerator="auto",log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=500, accelerator="auto",log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=False))
 
     # Plot the training history
