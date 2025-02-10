@@ -8,10 +8,10 @@ class ConvVAE(nn.Module):
             self,
             input_shape,
             latent_dim,
-            conv_channels=[128, 128, 128],
+            conv_channels=[64, 64, 64],
             dense_dim=128,
             activation='lrelu',
-            output_activation='sigmoid',
+            output_activation='linear',
             dropout=0.0,
             ):
         super(ConvVAE, self).__init__()
@@ -34,9 +34,7 @@ class ConvVAE(nn.Module):
         self.decoder = self.build_decoder()
 
         self.fc_mu = dl.MultiLayerPerceptron(self.flattened_size, [32, 32], latent_dim)
-
         self.fc_var = dl.MultiLayerPerceptron(self.flattened_size, [32, 32], latent_dim)
-
         self.fc_dec = dl.MultiLayerPerceptron(latent_dim, [32, 32], self.flattened_size)
 
     def get_activation(self, activation):
@@ -78,6 +76,8 @@ class ConvVAE(nn.Module):
         """
         encoder = nn.Sequential(
             nn.Conv2d(self.input_shape[0], self.conv_channels[0], 3, 1, 1),
+            #instancenorm2d 
+            nn.InstanceNorm2d(self.conv_channels[0]),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout),
             nn.MaxPool2d(2, 2),
@@ -103,21 +103,24 @@ class ConvVAE(nn.Module):
         """ 
         decoder = nn.Sequential(
             nn.Unflatten(1, (self.conv_channels[2], self.H[0], self.H[1])),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
+            nn.Conv2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
             nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout),
+            nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
             nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[1], 3, 2, 1),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout),
+            nn.ConvTranspose2d(self.conv_channels[1], self.conv_channels[1], 3, 2, 1),
             nn.ConvTranspose2d(self.conv_channels[1], self.input_shape[0], 3, 2, 1),
 
             # Resize the output to the original size
             nn.Upsample(size=(self.input_shape[1], self.input_shape[2]), mode='bilinear'),
 
+            nn.Conv2d(self.input_shape[0], self.input_shape[0], 3, 1, 1),
             self.get_activation(self.output_activation)
             )
+        
         return decoder
 
 
@@ -132,12 +135,12 @@ class Dummy3d2d(nn.Module):
 
 if __name__ == "__main__":
 
+    N = 48
+
     #Test dummy 3D to 2D model
     dummy = Dummy3d2d()
-    x = torch.randn(64, 64, 64)
+    x = torch.randn(N, N, N)
     print(dummy(x).shape)
-
-    N = 64
 
     vae = ConvVAE((2, N, N), latent_dim=2)
 

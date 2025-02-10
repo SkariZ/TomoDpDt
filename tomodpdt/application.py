@@ -70,6 +70,9 @@ class Tomography(dl.Application):
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
         self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self._device)
 
+        # Placeholder
+        self.normalize = False
+
     def initialize_parameters(self, projections, **kwargs):
         
         # Check if projections are a tensor
@@ -90,14 +93,16 @@ class Tomography(dl.Application):
             self.vae_model.fc_mu=vae.fc_mu
             self.vae_model.fc_var=vae.fc_var
             self.vae_model.fc_dec=vae.fc_dec
+            self.vae_model.reconstruction_loss = nn.MSELoss()
             
 
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
-            # Per channel normalization- min-max scaling for each channel
-            for i in range(projections.shape[1]):
-                projections[:, i] = (projections[:, i] - projections[:, i].min()) / (projections[:, i].max() - projections[:, i].min())
-            
+            # Compute the global min/max values per channel over the entire dataset
+            self.compute_global_min_max(projections)
+            projections = self.per_channel_normalization(projections)
+            self.normalize = True
+
         # Train the VAE model if not already trained
         if self.vae_model.training:
             self.train_vae(projections)
@@ -137,6 +142,26 @@ class Tomography(dl.Application):
         def params(self):
             return self.parameters()
 
+    def compute_global_min_max(self, projections):
+        """
+        Compute the global min/max values per channel over the entire dataset.
+        """
+        global_min = torch.min(projections, dim=0)[0]  # Min per channel
+        global_max = torch.max(projections, dim=0)[0]  # Max per channel
+
+        # Set the global min/max values
+        self.global_min = global_min
+        self.global_max = global_max
+
+    def per_channel_normalization(self, projections):
+        """
+        Normalize the projections per channel using precomputed global min/max scaling.
+        """
+        for i in range(projections.shape[1]):  # Iterate over channels
+            projections[:, i] = (projections[:, i] - self.global_min[i]) / (self.global_max[i] - self.global_min[i] + 1e-6)  # Prevent division by zero
+        return projections
+
+
     def train_vae(self, projections):
         """
         Train the VAE model on the given projections.
@@ -151,7 +176,7 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=2000, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=1000, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
@@ -244,6 +269,11 @@ class Tomography(dl.Application):
         batch = self.frames[idx]
 
         yhat = self.forward(idx)  # Estimated projections
+
+        # Normalize the estimated projections. Has to be done before computing the loss.
+        if self.normalize:
+            yhat = self.per_channel_normalization(yhat)
+
         with torch.no_grad():
             latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
@@ -565,7 +595,7 @@ if __name__ == "__main__":
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros', imaging_model=imaging_model)
 
     # Initialize the parameters
-    tomo.initialize_parameters(projections, normalize=True)
+    tomo.initialize_parameters(projections)
     
     # Visualize the latent space and the initial rotations
     plotting.plots_initial(tomo, gt=q_gt)
