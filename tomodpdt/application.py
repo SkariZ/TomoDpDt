@@ -247,13 +247,24 @@ class Tomography(dl.Application):
                 estimated_projection = self.imaging_model(rotated_volume)
 
                 #Check if estimated_projections has a function _value
-                if hasattr(estimated_projection, '_value'):
+                if hasattr(estimated_projection, '_value') and self.CH > 1:
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
                         ,axis=-1)
                     estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
 
+                elif hasattr(estimated_projection, '_value') and self.CH == 1:
+                    estimated_projection = estimated_projection._value
+
+                    # Check if the estimated projection is complex and take the imaginary part
+                    if estimated_projection.dtype == torch.complex64:
+                        estimated_projection = estimated_projection.imag
+                        estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+
                 estimated_projections[i] = estimated_projection
+            
+            else:
+                raise ValueError("Imaging model must be a nn.Module.")
 
             #Hardcoded for now
             # Create a detached version for NumPy-based function
@@ -527,13 +538,24 @@ class Tomography(dl.Application):
                 estimated_projection = self.imaging_model(rotated_volume)
 
                 #Check if estimated_projections has a function _value
-                if hasattr(estimated_projection, '_value'):
+                if hasattr(estimated_projection, '_value') and self.CH > 1:
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
                         ,axis=-1)
                     estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
 
+                elif hasattr(estimated_projection, '_value') and self.CH == 1:
+                    estimated_projection = estimated_projection._value
+
+                    # Check if the estimated projection is complex and take the imaginary part
+                    if estimated_projection.dtype == torch.complex64:
+                        estimated_projection = estimated_projection.imag
+                        estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+
                 estimated_projections[i] = estimated_projection
+            
+            else:
+                raise ValueError("Imaging model must be a nn.Module.")
 
         return estimated_projections
     
@@ -567,7 +589,8 @@ if __name__ == "__main__":
     # Projections is a real and imaginary part of the projections
     
     projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
-    projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
+    projections = torch.tensor(projections.imag, dtype=torch.float32).squeeze(-1)
+    #projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
 
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
     #test_object = test_object.unsqueeze(0)
@@ -595,7 +618,7 @@ if __name__ == "__main__":
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros', imaging_model=imaging_model)
 
     # Initialize the parameters
-    tomo.initialize_parameters(projections)
+    tomo.initialize_parameters(projections, normalize=True)
     
     # Visualize the latent space and the initial rotations
     plotting.plots_initial(tomo, gt=q_gt)
@@ -604,7 +627,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=500, accelerator="auto",log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=5, accelerator="auto",log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=False))
 
     # Plot the training history
