@@ -93,7 +93,6 @@ class Tomography(dl.Application):
             self.vae_model.fc_mu=vae.fc_mu
             self.vae_model.fc_var=vae.fc_var
             self.vae_model.fc_dec=vae.fc_dec
-            self.vae_model.reconstruction_loss = nn.MSELoss()
             
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
@@ -167,14 +166,14 @@ class Tomography(dl.Application):
 
         # Data loader for the VAE model x=projections and y=projections
         data_loader = DataLoader(
-            TensorDataset(projections, projections), batch_size=64, shuffle=True
+            TensorDataset(projections, projections), batch_size=32, shuffle=True
             )
 
         # Build the VAE model
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=1000, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=400, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
@@ -595,8 +594,8 @@ if __name__ == "__main__":
     # Projections is a real and imaginary part of the projections
     
     projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
-    projections = torch.tensor(projections.imag, dtype=torch.float32).squeeze(-1)
-    #projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
+    #projections = torch.tensor(projections.imag, dtype=torch.float32).squeeze(-1)
+    projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
 
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
     #test_object = test_object.unsqueeze(0)

@@ -8,10 +8,10 @@ class ConvVAE(nn.Module):
             self,
             input_shape,
             latent_dim,
-            conv_channels=[64, 64, 64],
+            conv_channels=[64, 64, 32],
             dense_dim=128,
             activation='lrelu',
-            output_activation='linear',
+            output_activation='sigmoid',
             dropout=0.0,
             ):
         super(ConvVAE, self).__init__()
@@ -76,47 +76,48 @@ class ConvVAE(nn.Module):
         """
         encoder = nn.Sequential(
             nn.Conv2d(self.input_shape[0], self.conv_channels[0], 3, 1, 1),
-            #instancenorm2d 
-            nn.InstanceNorm2d(self.conv_channels[0]),
+            nn.BatchNorm2d(self.conv_channels[0]),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(self.conv_channels[0], self.conv_channels[1], 3, 1, 1),
-            nn.Conv2d(self.conv_channels[1], self.conv_channels[1], 3, 1, 1),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            nn.MaxPool2d(2, 2),
-            nn.Conv2d(self.conv_channels[1], self.conv_channels[2], 3, 1, 1),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            nn.Conv2d(self.conv_channels[1], self.conv_channels[2], 3, 1, 1),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            nn.MaxPool2d(2, 2),
-            nn.Flatten(),
+            self.conv_block(self.conv_channels[0], self.conv_channels[0]),
+            nn.MaxPool2d(2),
+            self.conv_block(self.conv_channels[0], self.conv_channels[1]),
+            nn.MaxPool2d(2),
+            self.conv_block(self.conv_channels[1], self.conv_channels[2]),
+            nn.MaxPool2d(2),
+            nn.Flatten()
             )
         return encoder
     
+    def conv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding),
+            nn.BatchNorm2d(out_channels),
+            self.get_activation(self.activation),
+            nn.Dropout(self.dropout)
+            )
+    def upconv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
+        return nn.Sequential(
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding),
+            nn.BatchNorm2d(out_channels),
+            self.get_activation(self.activation),
+            nn.Dropout(self.dropout)
+            )
+
     def build_decoder(self):
         """
         Build the decoder.
         """ 
         decoder = nn.Sequential(
             nn.Unflatten(1, (self.conv_channels[2], self.H[0], self.H[1])),
-            nn.Conv2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
-            nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[2], 3, 2, 1),
-            nn.ConvTranspose2d(self.conv_channels[2], self.conv_channels[1], 3, 2, 1),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            nn.ConvTranspose2d(self.conv_channels[1], self.conv_channels[1], 3, 2, 1),
-            nn.ConvTranspose2d(self.conv_channels[1], self.input_shape[0], 3, 2, 1),
-
-            # Resize the output to the original size
-            nn.Upsample(size=(self.input_shape[1], self.input_shape[2]), mode='bilinear'),
-
+            self.conv_block(self.conv_channels[2], self.conv_channels[2]),
+            self.upconv_block(self.conv_channels[2], self.conv_channels[2]),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            self.upconv_block(self.conv_channels[2], self.conv_channels[1]),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            self.upconv_block(self.conv_channels[1], self.conv_channels[0]),
+            nn.Upsample(scale_factor=2, mode='bilinear'),
+            self.upconv_block(self.conv_channels[0], self.input_shape[0]),
             nn.Conv2d(self.input_shape[0], self.input_shape[0], 3, 1, 1),
             self.get_activation(self.output_activation)
             )
@@ -169,3 +170,8 @@ if __name__ == "__main__":
 
     #Count the number of parameters
     print(sum(p.numel() for p in vae_model.parameters()))
+
+    #Count the parameters in the encoder
+    print(sum(p.numel() for p in vae_model.encoder.parameters()))
+    #Count the parameters in the decoder
+    print(sum(p.numel() for p in vae_model.decoder.parameters()))
