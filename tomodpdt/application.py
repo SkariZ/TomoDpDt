@@ -95,7 +95,6 @@ class Tomography(dl.Application):
             self.vae_model.fc_dec=vae.fc_dec
             self.vae_model.reconstruction_loss = nn.MSELoss()
             
-
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
             # Compute the global min/max values per channel over the entire dataset
@@ -146,12 +145,12 @@ class Tomography(dl.Application):
         """
         Compute the global min/max values per channel over the entire dataset.
         """
-        global_min = torch.min(projections, dim=0)[0]  # Min per channel
-        global_max = torch.max(projections, dim=0)[0]  # Max per channel
+        global_min = torch.amin(projections, dim=(0, 2, 3))
+        global_max = torch.amax(projections, dim=(0, 2, 3))  
 
         # Set the global min/max values
-        self.global_min = global_min
-        self.global_max = global_max
+        self.global_min = global_min.to(self._device)
+        self.global_max = global_max.to(self._device)
 
     def per_channel_normalization(self, projections):
         """
@@ -160,7 +159,6 @@ class Tomography(dl.Application):
         for i in range(projections.shape[1]):  # Iterate over channels
             projections[:, i] = (projections[:, i] - self.global_min[i]) / (self.global_max[i] - self.global_min[i] + 1e-6)  # Prevent division by zero
         return projections
-
 
     def train_vae(self, projections):
         """
@@ -249,9 +247,9 @@ class Tomography(dl.Application):
                 #Check if estimated_projections has a function _value
                 if hasattr(estimated_projection, '_value') and self.CH > 1:
                     estimated_projection = torch.concatenate(
-                        (estimated_projection._value.real, estimated_projection._value.imag)
-                        ,axis=-1)
-                    estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+                        (estimated_projection._value.real, estimated_projection._value.imag),
+                        axis=-1)
+                    estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 elif hasattr(estimated_projection, '_value') and self.CH == 1:
                     estimated_projection = estimated_projection._value
@@ -259,7 +257,7 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
-                        estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+                        estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 estimated_projections[i] = estimated_projection
             
@@ -289,6 +287,7 @@ class Tomography(dl.Application):
             latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
         proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
+
         # Compute the total loss
         tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss
 
@@ -526,6 +525,10 @@ class Tomography(dl.Application):
         #Set the grid to the device as well...
         self.grid = self.grid.to(self._device)
 
+        # Set the global min/max values to the device
+        self.global_min = self.global_min.to(self._device)
+        self.global_max = self.global_max.to(self._device)
+
         # Initialize the estimated projections
         estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
 
@@ -542,7 +545,7 @@ class Tomography(dl.Application):
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
                         ,axis=-1)
-                    estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+                    estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 elif hasattr(estimated_projection, '_value') and self.CH == 1:
                     estimated_projection = estimated_projection._value
@@ -550,12 +553,15 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
-                        estimated_projection = torch.swapaxes(estimated_projection, 0, 2)
+                        estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 estimated_projections[i] = estimated_projection
             
             else:
                 raise ValueError("Imaging model must be a nn.Module.")
+
+        if self.normalize:
+            estimated_projections = self.per_channel_normalization(estimated_projections)
 
         return estimated_projections
     
@@ -627,8 +633,8 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=5, accelerator="auto",log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=False))
+    trainer = dl.Trainer(max_epochs=5, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     # Plot the training history
     try:
