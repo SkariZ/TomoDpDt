@@ -104,11 +104,11 @@ if __name__ == "__main__":
 
     image = imaging_model(object)
 
-    print(image.shape)
-    plt.imshow(image.imag)
+    print(image.cpu().shape)
+    plt.imshow(image.cpu().imag)
     plt.colorbar()
     plt.show()
-    plt.imshow(image.real)
+    plt.imshow(image.cpu().real)
     plt.colorbar()
     plt.show()
     

@@ -346,6 +346,7 @@ class Tomography(dl.Application):
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
 
+        # Compute the strictly over 1.33 loss
         so_loss = self.strictly_over_133(self.volume)
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
@@ -354,7 +355,7 @@ class Tomography(dl.Application):
         """
         Check if the volume has values strictly over 1.33.
         """
-        loss = torch.sum(volume[volume <= 1.33])
+        loss = torch.sum(volume[volume <= 1.33]) * 0.1
         return loss / volume.numel()
 
     def total_variation_regularization(self, delta_n):
