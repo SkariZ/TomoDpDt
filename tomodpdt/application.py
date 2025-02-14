@@ -50,7 +50,7 @@ class Tomography(dl.Application):
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         
         # Set the optimizer (if provided) - not used as of now...
-        self.optimizer = optimizer if optimizer is not None else Adam(lr=8e-4)
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=5e-4)
         
         # Set volume initialization (if provided)
         self.volume_init = volume_init
@@ -285,10 +285,10 @@ class Tomography(dl.Application):
         with torch.no_grad():
             latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
-        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss = self.compute_loss(yhat, latent_space, batch, idx)
+        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss(yhat, latent_space, batch, idx)
 
         # Compute the total loss
-        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss
+        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
 
         loss = {
             "proj_loss": proj_loss, 
@@ -297,6 +297,7 @@ class Tomography(dl.Application):
             "qv_loss": qv_loss, 
             "q0_loss": q0_loss,
             "rtr_loss": rtr_loss,
+            "so_loss": so_loss,
             "total_loss": tot_loss
             }
         for name, v in loss.items():
@@ -345,7 +346,16 @@ class Tomography(dl.Application):
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
 
-        return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss
+        so_loss = self.strictly_over_133(self.volume)
+
+        return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
+
+    def strictly_over_133(self, volume):
+        """
+        Check if the volume has values strictly over 1.33.
+        """
+        loss = torch.sum(volume[volume <= 1.33])
+        return loss / volume.numel()
 
     def total_variation_regularization(self, delta_n):
         """
@@ -560,7 +570,9 @@ class Tomography(dl.Application):
                 raise ValueError("Imaging model must be a nn.Module.")
 
         if self.normalize:
-            estimated_projections = self.per_channel_normalization(estimated_projections)
+            estimated_projections = self.per_channel_normalization(
+                estimated_projections
+                )
 
         return estimated_projections
     
@@ -577,9 +589,20 @@ class Tomography(dl.Application):
         elif self.rotation_optim_case == 'basis':
             rotations = torch.matmul(self.basis.to(self._device), rotations)
             rotations = rotations / rotations.norm(dim=-1, keepdim=True)
-            return rotations 
+            return rotations
         
-
+    def move_all_to_device(self, device):
+        """
+        Move all parameters to the given device.
+        """
+        self.to(device)
+        self.rotation_params = self.rotation_params.to(device)
+        self.volume = self.volume.to(device)
+        self.basis = self.basis.to(device)
+        self.grid = self.grid.to(device)
+        self.global_min = self.global_min.to(device)
+        self.global_max = self.global_max.to(device)
+   
 # Testing the code
 if __name__ == "__main__":
     import numpy as np
@@ -632,8 +655,8 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=5, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
+    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=True))
 
     # Plot the training history
     try:

@@ -7,9 +7,9 @@ class ConvVAE(nn.Module):
     def __init__(
             self,
             input_shape,
-            latent_dim,
-            conv_channels=[64, 64, 32],
-            dense_dim=128,
+            latent_dim=2,
+            conv_channels=[32, 32, 32],
+            dense_dim=256,
             activation='lrelu',
             output_activation='sigmoid',
             dropout=0.0,
@@ -33,9 +33,9 @@ class ConvVAE(nn.Module):
         self.H = self.calculate_H()
         self.decoder = self.build_decoder()
 
-        self.fc_mu = dl.MultiLayerPerceptron(self.flattened_size, [32, 32], latent_dim)
-        self.fc_var = dl.MultiLayerPerceptron(self.flattened_size, [32, 32], latent_dim)
-        self.fc_dec = dl.MultiLayerPerceptron(latent_dim, [32, 32], self.flattened_size)
+        self.fc_mu = dl.MultiLayerPerceptron(self.flattened_size, [16, 16], latent_dim)
+        self.fc_var = dl.MultiLayerPerceptron(self.flattened_size, [16, 16], latent_dim)
+        self.fc_dec = dl.MultiLayerPerceptron(latent_dim, [16, 16], self.flattened_size)
 
     def get_activation(self, activation):
         if activation == 'relu':
@@ -96,6 +96,7 @@ class ConvVAE(nn.Module):
             self.get_activation(self.activation),
             nn.Dropout(self.dropout)
             )
+    
     def upconv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         return nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding),
