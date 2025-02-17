@@ -16,8 +16,8 @@ import deeptrack as dt
 from deeplay.external import Adam
 
 import numpy as np
-data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
-QGT = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
+#data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
+#QGT = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
 class Tomography(dl.Application):
     def __init__(self,
@@ -54,7 +54,7 @@ class Tomography(dl.Application):
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
         
         # Set the optimizer (if provided) - not used as of now...
-        self.optimizer = optimizer if optimizer is not None else Adam(lr=5e-4)
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=8e-4)
         
         # Set volume initialization (if provided)
         self.volume_init = volume_init
@@ -97,6 +97,7 @@ class Tomography(dl.Application):
             self.vae_model.fc_mu=vae.fc_mu
             self.vae_model.fc_var=vae.fc_var
             self.vae_model.fc_dec=vae.fc_dec
+            self.vae_model.beta = 0.05
             
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
@@ -120,7 +121,7 @@ class Tomography(dl.Application):
         self.rotation_initial_dict = erfl.process_latent_space(
             z=latent_space, 
             frames=projections,
-            quaternions=QGT, 
+            #quaternions=QGT, 
             **kwargs
             )  # Later: add axis also
 
@@ -209,13 +210,12 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
             cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
             cloud = cloud / cloud.max()
+            # Scale to the range [1.33, 1.40]
+            cloud = 1.33 + 0.07 * cloud
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
             self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device)+1.33)
-
-        elif self.initial_volume == 'constant':
-            self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device))
 
         elif self.initial_volume == 'random':
             self.volume = nn.Parameter(torch.rand(self.N, self.N, self.N, device=self._device))
@@ -355,6 +355,7 @@ class Tomography(dl.Application):
         so_loss = self.strictly_over_133(self.volume)
 
         # Scale the losses
+        proj_loss *= 10
         latent_loss *= 0.1
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
@@ -363,7 +364,7 @@ class Tomography(dl.Application):
         """
         Check if the volume has values strictly over 1.33.
         """
-        loss = torch.sum(volume[volume <= 1.33]) * 0.1
+        loss = torch.sum(volume <= 1.33)
         return loss / volume.numel()
 
     def total_variation_regularization(self, delta_n):
@@ -620,7 +621,7 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
+    data = np.load('../test_data/test_data_cf.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
     #projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
     # Projections is a real and imaginary part of the projections
@@ -664,8 +665,8 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
+    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
 
     # Plot the training history
     try:

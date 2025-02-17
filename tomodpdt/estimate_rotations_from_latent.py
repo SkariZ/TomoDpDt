@@ -15,7 +15,7 @@ def process_latent_space(
     min_peaks=2,
     prominence=0.5,
     height_factor=0.75,
-    basis_functions=20,
+    basis_functions=15,
     **kwargs
 ):
     """
@@ -173,6 +173,10 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prom
 
     if len(peaks) < min_peaks:
         peaks = np.append(peaks, len(res)-1)  # Add last peak if necessary
+
+    # If there is a higher height after the last peak, add it
+    if len(peaks) > 1 and res[-1] > res[peaks[-1]]:
+        peaks = np.append(peaks, len(res)-1)
 
     return peaks
 

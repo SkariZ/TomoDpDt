@@ -147,7 +147,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, surface_count=12, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 

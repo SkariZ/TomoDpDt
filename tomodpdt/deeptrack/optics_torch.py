@@ -999,6 +999,234 @@ class Optics(Feature):
     #     return self._image_wrapped_process_output(*args, **feature_input)
 
 
+class Fluorescence(Optics):
+    """Optical device for fluorescent imaging.
+
+    The `Fluorescence` class simulates the imaging process in fluorescence
+    microscopy by creating a discretized volume where each pixel represents 
+    the intensity of light emitted by fluorophores in the sample. It extends 
+    the `Optics` class to include fluorescence-specific functionalities.
+
+    Parameters
+    ----------
+    NA: float
+        Numerical aperture of the optical system.
+    wavelength: float
+        Emission wavelength of the fluorescent light (in meters).
+    magnification: float
+        Magnification of the optical system.
+    resolution: array_like[float (, float, float)]
+        Pixel spacing in the camera. Optionally includes the z-direction.
+    refractive_index_medium: float
+        Refractive index of the imaging medium.
+    padding: array_like[int, int, int, int]
+        Padding applied to the sample volume to reduce edge effects.
+    output_region: array_like[int, int, int, int], optional
+        Region of the output image to extract (x, y, width, height). If None, 
+        returns the full image.
+    pupil: Feature, optional
+        A feature set defining the pupil function at focus. The input is 
+        the unaberrated pupil.
+    illumination: Feature, optional
+        A feature set defining the illumination source.
+    upscale: int, optional
+        Scaling factor for the resolution of the optical system.
+    **kwargs: Dict[str, Any]
+
+    Attributes
+    ----------
+    __gpu_compatible__: bool
+        Indicates whether the class supports GPU acceleration.
+    NA: float
+        Numerical aperture of the optical system.
+    wavelength: float
+        Emission wavelength of the fluorescent light (in meters).
+    magnification: float
+        Magnification of the optical system.
+    resolution: array_like[float (, float, float)]
+        Pixel spacing in the camera. Optionally includes the z-direction.
+    refractive_index_medium: float
+        Refractive index of the imaging medium.
+    padding: array_like[int, int, int, int]
+        Padding applied to the sample volume to reduce edge effects.
+    output_region: array_like[int, int, int, int]
+        Region of the output image to extract (x, y, width, height).
+    voxel_size: function
+        Function returning the voxel size of the optical system.
+    pixel_size: function
+        Function returning the pixel size of the optical system.
+    upscale: int
+        Scaling factor for the resolution of the optical system.
+    limits: array_like[int, int]
+        Limits of the volume to be imaged.
+    fields: list[Feature]
+        List of fields to be imaged
+
+    Methods
+    -------
+    `get(illuminated_volume: array_like[complex], limits: array_like[int, int], **kwargs: Dict[str, Any]) -> Image`
+        Simulates the imaging process using a fluorescence microscope.
+
+    Examples
+    --------
+    Create a `Fluorescence` instance:
+
+    >>> import deeptrack as dt
+
+    >>> optics = dt.Fluorescence(
+    ...     NA=1.4, wavelength=0.52e-6, magnification=60,
+    ... )
+    >>> print(optics.NA())
+    1.4
+
+    """
+
+    __gpu_compatible__ = True
+
+    def get(
+        self:  'Fluorescence', 
+        illuminated_volume: ArrayLike[complex], 
+        limits: ArrayLike[int], 
+        **kwargs: Dict[str, Any]
+    ) -> Image:
+        """Simulates the imaging process using a fluorescence microscope.
+
+        This method convolves the 3D illuminated volume with a pupil function 
+        to generate a 2D image projection.
+
+        Parameters
+        ----------
+        illuminated_volume: array_like[complex]
+            The illuminated 3D volume to be imaged.
+        limits: array_like[int, int]
+            Boundaries of the illuminated volume in each dimension.
+        **kwargs: Dict[str, Any]
+            Additional properties for the imaging process, such as:
+            - 'padding': Padding to apply to the sample.
+            - 'output_region': Specific region to extract from the image.
+
+        Returns
+        -------
+        Image: Image
+            A 2D image object representing the fluorescence projection.
+
+        Notes
+        -----
+        - Empty slices in the volume are skipped for performance optimization.
+        - The pupil function incorporates defocus effects based on z-slice.
+
+        Examples
+        --------
+        Simulate imaging a volume:
+
+        >>> import deeptrack as dt
+        >>> import numpy as np
+
+        >>> optics = dt.Fluorescence(
+        ...     NA=1.4, wavelength=0.52e-6, magnification=60,
+        ... )
+        >>> volume = dt.Image(np.ones((128, 128, 10), dtype=complex))
+        >>> limits = np.array([[0, 128], [0, 128], [0, 10]])
+        >>> properties = optics.properties()
+        >>> filtered_properties = {
+        ...     k: v for k, v in properties.items() 
+        ...     if k in {"padding", "output_region", "NA", 
+        ...              "wavelength", "refractive_index_medium"}
+        ... }
+        >>> image = optics.get(volume, limits, **filtered_properties)
+        >>> print(image.shape)
+        (128, 128, 1)
+        
+        """
+
+        # Pad volume
+        padded_volume, limits = self._pad_volume_tensor(
+            illuminated_volume, limits=limits, **kwargs
+        )
+
+        pad = kwargs.get("padding", (0, 0, 0, 0))
+        output_region = torch.tensor(
+            kwargs.get("output_region", (None, None, None, None)), dtype=torch.int32
+        )
+        
+        output_region = output_region.tolist()  # Convert to list for element-wise modification
+        output_region[0] = (
+            None if output_region[0] is None else int(output_region[0] - limits[0, 0] - pad[0])
+        )
+        output_region[1] = (
+            None if output_region[1] is None else int(output_region[1] - limits[1, 0] - pad[1])
+        )
+        output_region[2] = (
+            None if output_region[2] is None else int(output_region[2] - limits[0, 0] + pad[2])
+        )
+        output_region[3] = (
+            None if output_region[3] is None else int(output_region[3] - limits[1, 0] + pad[3])
+        )
+        
+        padded_volume = padded_volume[
+            output_region[0] : output_region[2],
+            output_region[1] : output_region[3],
+            :,
+        ]
+        
+        z_limits = limits[2, :]
+
+        output_image = Image(
+            torch.zeros((*padded_volume.shape[0:2], 1)).to(padded_volume.device),
+            )
+
+        index_iterator = range(padded_volume.shape[2])
+        z_iterator = torch.linspace(
+            z_limits[0],
+            z_limits[1],
+            padded_volume.shape[2],
+            ).to(padded_volume.device)
+
+        zero_plane = torch.all(padded_volume == 0, axis=(0, 1), keepdims=False)
+        z_values = z_iterator[~zero_plane]
+
+        volume = pad_image_to_fft(padded_volume, axes=(0, 1))
+        
+        #voxel_size = get_active_voxel_size()
+
+        pupils = self._pupil(
+            volume.shape[:2], defocus=z_values, include_aberration=False, **kwargs
+            )
+        pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
+
+        z_index = 0
+
+        # Loop through volume and convolve sample with pupil function
+        for i, z in zip(index_iterator, z_iterator):
+
+            if zero_plane[i]:
+                continue
+
+            pupil = pupils[z_index]
+            z_index += 1
+
+            psf = torch.square(torch.abs(torch.fft.ifft2(torch.fft.fftshift(pupil))))
+            optical_transfer_function = torch.fft.fft2(psf)
+            fourier_field = torch.fft.fft2(volume[:, :, i])
+            convolved_fourier_field = fourier_field * optical_transfer_function
+            field = torch.fft.ifft2(convolved_fourier_field)
+            # # Discard remaining imaginary part (should be 0 up to rounding error)
+            field = torch.real(field)
+            output_image._value[:, :, 0] += field[
+                : padded_volume.shape[0], : padded_volume.shape[1]
+            ]
+
+        output_image = output_image[pad[0]: -pad[2], pad[1]: -pad[3]]
+
+        # Some better way to do this pobably...
+        illuminated_volume = Image(illuminated_volume)
+        pupils = Image(pupils[0])
+        
+        output_image.properties = illuminated_volume.properties + pupils.properties
+
+        return output_image
+
+
 class Brightfield(Optics):
     """Simulates imaging of coherently illuminated samples.
 
@@ -1183,9 +1411,9 @@ class Brightfield(Optics):
         
         z_limits = limits[2, :]
 
-        output_image = Image(
-            torch.zeros((*padded_volume.shape[0:2], 1))
-            )
+        #output_image = Image(
+        #    torch.zeros((*padded_volume.shape[0:2], 1))
+        #    )
 
         index_iterator = range(padded_volume.shape[2])
         z_iterator = torch.linspace(
