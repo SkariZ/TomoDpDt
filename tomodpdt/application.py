@@ -15,6 +15,10 @@ import deeptrack as dt
 #so = imb.setup_optics(nsize=96)
 from deeplay.external import Adam
 
+import numpy as np
+data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
+QGT = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
+
 class Tomography(dl.Application):
     def __init__(self,
                  volume_size: Optional[Sequence[int]] = (96, 96, 96),
@@ -115,7 +119,8 @@ class Tomography(dl.Application):
         # Retrieve the initial rotation parameters
         self.rotation_initial_dict = erfl.process_latent_space(
             z=latent_space, 
-            frames=projections, 
+            frames=projections,
+            quaternions=QGT, 
             **kwargs
             )  # Later: add axis also
 
@@ -348,6 +353,9 @@ class Tomography(dl.Application):
 
         # Compute the strictly over 1.33 loss
         so_loss = self.strictly_over_133(self.volume)
+
+        # Scale the losses
+        latent_loss *= 0.1
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
@@ -612,7 +620,7 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data_b.npz', allow_pickle=True)
+    data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
     #projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
     # Projections is a real and imaginary part of the projections
@@ -656,8 +664,8 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=32, shuffle=True))
+    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     # Plot the training history
     try:

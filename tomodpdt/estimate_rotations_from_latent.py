@@ -7,6 +7,7 @@ def process_latent_space(
     z,
     frames,
     initial_axes=None,
+    quaternions=None,
     peaks_period_range=[20, 100],
     window_length=11,
     polyorder=2,
@@ -14,7 +15,7 @@ def process_latent_space(
     min_peaks=2,
     prominence=0.5,
     height_factor=0.75,
-    basis_functions=15,
+    basis_functions=20,
     **kwargs
 ):
     """
@@ -105,7 +106,11 @@ def process_latent_space(
     qw = torch.cos(half_angles)
     sin_half_angles = torch.sin(half_angles)
     q_xyz = axes * sin_half_angles.unsqueeze(1)
-    quaternions = torch.cat((qw.unsqueeze(1), q_xyz), dim=1)
+    
+    if quaternions is None:
+        quaternions = torch.cat((qw.unsqueeze(1), q_xyz), dim=1)
+    else:
+        peaks = torch.tensor([0, len(quaternions) - 1])
 
     # Generate basis functions and initialize coefficients
     basis = generate_basis_functions(quaternions.shape[0], basis_functions)

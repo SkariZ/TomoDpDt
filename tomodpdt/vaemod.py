@@ -8,7 +8,7 @@ class ConvVAE(nn.Module):
             self,
             input_shape,
             latent_dim=2,
-            conv_channels=[32, 32, 32],
+            conv_channels=[64, 48, 32],
             dense_dim=256,
             activation='lrelu',
             output_activation='sigmoid',
@@ -33,9 +33,21 @@ class ConvVAE(nn.Module):
         self.H = self.calculate_H()
         self.decoder = self.build_decoder()
 
-        self.fc_mu = dl.MultiLayerPerceptron(self.flattened_size, [16, 16], latent_dim)
-        self.fc_var = dl.MultiLayerPerceptron(self.flattened_size, [16, 16], latent_dim)
-        self.fc_dec = dl.MultiLayerPerceptron(latent_dim, [16, 16], self.flattened_size)
+        self.fc_mu = dl.MultiLayerPerceptron(
+            self.flattened_size, 
+            hidden_features=[16], 
+            out_features=latent_dim
+            )
+        self.fc_var = dl.MultiLayerPerceptron(
+            self.flattened_size, 
+            hidden_features=[16], 
+            out_features=latent_dim
+            )
+        self.fc_dec = dl.MultiLayerPerceptron(
+            latent_dim, 
+            hidden_features=[24], 
+            out_features=self.flattened_size
+            )
 
     def get_activation(self, activation):
         if activation == 'relu':
@@ -173,6 +185,18 @@ if __name__ == "__main__":
     print(sum(p.numel() for p in vae_model.parameters()))
 
     #Count the parameters in the encoder
+    print("Encoder parameters:")
     print(sum(p.numel() for p in vae_model.encoder.parameters()))
     #Count the parameters in the decoder
+    print("Decoder parameters:")
     print(sum(p.numel() for p in vae_model.decoder.parameters()))
+    #Count the parameters in the fc_mu
+    print("fc_mu parameters:")
+    print(sum(p.numel() for p in vae_model.fc_mu.parameters()))
+    #Count the parameters in the fc_var
+    print("fc_var parameters:")
+    print(sum(p.numel() for p in vae_model.fc_var.parameters()))
+    #Count the parameters in the fc_dec
+    print("fc_dec parameters:")
+    print(sum(p.numel() for p in vae_model.fc_dec.parameters()))
+          
