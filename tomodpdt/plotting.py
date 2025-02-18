@@ -66,6 +66,10 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     ax[1].imshow(predicted_object.sum(1))
     ax[2].set_title("Sum along z-axis")
     ax[2].imshow(predicted_object.sum(2))
+    # Add a colorbar
+    im = ax[0].imshow(predicted_object.sum(0))
+    fig.colorbar(im, ax=ax)
+
     plt.show()
 
     if gt_v is not None:
@@ -77,6 +81,11 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         ax[1].imshow(gt_v.sum(1))
         ax[2].set_title("Sum along z-axis")
         ax[2].imshow(gt_v.sum(2))
+
+        # Add a colorbar
+        im = ax[0].imshow(gt_v.sum(0))
+        fig.colorbar(im, ax=ax)
+
         plt.show()
 
     R_idx = np.random.randint(0, projections_pred.shape[0], 9)

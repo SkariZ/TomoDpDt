@@ -25,7 +25,7 @@ def setup_optics(nsize, wavelength=532e-9, resolution=100e-9, magnification=1, r
         resolution=resolution,
         magnification=magnification,
         output_region=(0, 0, nsize, nsize),
-        return_field=return_field
+        #return_field=return_field
     )
 
     # Define simulation limits
@@ -85,7 +85,7 @@ class imaging_model(nn.Module):
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
-        return self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
+        return self.optics.get(object, self.limits, **self.filtered_properties)
 
 if __name__ == "__main__":
 
@@ -95,22 +95,17 @@ if __name__ == "__main__":
     imaging_model = imaging_model(optics_setup)
 
     #Create a random object, a cube with a smaller cube inside
-    object = torch.zeros((96, 96, 96)) + 1.33
-    object[16:80, 16:80, 16:80] = 1.4
-    object[32:64, 32:64, 32:64] = 1.5
-    object[40:56, 40:56, 40:56] = 1.6
+    object = torch.zeros((96, 96, 96))
+    object[46:50, 46:50, 46:50] = 0.05
     
     object = object.to(torch.device('cuda'))
 
     image = imaging_model(object)
 
     print(image.cpu().shape)
-    plt.imshow(image.cpu().imag)
-    plt.colorbar()
-    plt.show()
     plt.imshow(image.cpu().real)
     plt.colorbar()
     plt.show()
     
-    image2 = torch.concatenate((image._value.real, image._value.imag), axis=-1)
-    image2 = torch.swapaxes(image2, 0, 2)
+    #image2 = torch.concatenate((image._value.real, image._value.imag), axis=-1)
+    #image2 = torch.swapaxes(image2, 0, 2)

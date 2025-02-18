@@ -89,7 +89,7 @@ class Tomography(dl.Application):
         # Set the number of channels
         self.CH = projections.shape[1]
 
-        if self.CH > 1:
+        if self.CH > 0:
             # Update the VAE model to handle multiple channels
             vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2)
             self.vae_model.encoder=vae.encoder
@@ -135,12 +135,15 @@ class Tomography(dl.Application):
             raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'. as of now...")
         
         self.rotation_params = nn.Parameter(rotation_params.to(self._device))
-        
+        #self.rotation_params = rotation_params.to(self._device)
+
         # Setting frames to the number of rotations
         self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
-        #self.frames = self.frames.squeeze(1)
 
-        # Set the optimizer
+        # Normalize back to the original range
+        #if self.normalize:
+        #    self.frames = self.per_channel_denormalization(self.frames)
+
         # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
         @self.optimizer.params
         def params(self):
@@ -164,7 +167,15 @@ class Tomography(dl.Application):
         for i in range(projections.shape[1]):  # Iterate over channels
             projections[:, i] = (projections[:, i] - self.global_min[i]) / (self.global_max[i] - self.global_min[i] + 1e-6)  # Prevent division by zero
         return projections
-
+    
+    def per_channel_denormalization(self, projections):
+        """
+        Denormalize the projections per channel using precomputed global min/max scaling.
+        """
+        for i in range(projections.shape[1]):  # Iterate over channels
+            projections[:, i] = projections[:, i] * (self.global_max[i] - self.global_min[i] + 1e-6) + self.global_min[i]
+        return projections
+    
     def train_vae(self, projections):
         """
         Train the VAE model on the given projections.
@@ -210,12 +221,13 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
             cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
             cloud = cloud / cloud.max()
-            # Scale to the range [1.33, 1.40]
-            cloud = 1.33 + 0.07 * cloud
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device)+1.33)
+            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device))
+        
+        elif self.initial_volume == 'refraction':
+            self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device) * 1.33)
 
         elif self.initial_volume == 'random':
             self.volume = nn.Parameter(torch.rand(self.N, self.N, self.N, device=self._device))
@@ -243,7 +255,7 @@ class Tomography(dl.Application):
         # Rotate the volume and estimate the projections
         for i in range(batch_size):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
-
+                
             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projection = self.imaging_model(rotated_volume)
@@ -263,17 +275,14 @@ class Tomography(dl.Application):
                         estimated_projection = estimated_projection.imag
                         estimated_projection = estimated_projection.permute(2, 0, 1)
 
+                #Add channel dimension if not present
+                if len(estimated_projection.shape) == 2:
+                    estimated_projection = estimated_projection.unsqueeze(0)
+
                 estimated_projections[i] = estimated_projection
             
             else:
                 raise ValueError("Imaging model must be a nn.Module.")
-
-            #Hardcoded for now
-            # Create a detached version for NumPy-based function
-            # rotated_volume_np = rotated_volume.detach().cpu().numpy()
-            # rotated_volume_img = dt.Image(rotated_volume_np)
-            # im = so['optics'].get(rotated_volume_img, so['limits'], so['fields'], **so['filtered_properties']).imag
-            # estimated_projections[i] = torch.tensor(im, device=self._device).squeeze(-1)
 
         return estimated_projections
     
@@ -283,10 +292,10 @@ class Tomography(dl.Application):
 
         yhat = self.forward(idx)  # Estimated projections
 
-        # Normalize the estimated projections. Has to be done before computing the loss.
+        # Normalize the estimated projections
         if self.normalize:
             yhat = self.per_channel_normalization(yhat)
-
+   
         with torch.no_grad():
             latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
@@ -352,20 +361,25 @@ class Tomography(dl.Application):
             rtr_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the strictly over 1.33 loss
-        so_loss = self.strictly_over_133(self.volume)
+        if self.initial_volume == 'refraction':
+            so_loss = self.strictly_over_133_loss(self.volume)
+        else:
+            so_loss = torch.tensor(0.0, device=self._device)
 
         # Scale the losses
         proj_loss *= 10
         latent_loss *= 0.1
+        rtv_loss *= 0.5
+        so_loss *= 5
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
-    def strictly_over_133(self, volume):
+    def strictly_over_133_loss(self, volume):
         """
-        Check if the volume has values strictly over 1.33.
+        Computes a loss that penalizes values strictly below 1.33.
         """
-        loss = torch.sum(volume <= 1.33)
-        return loss / volume.numel()
+        loss = torch.sum(torch.relu(1.33 - volume))  # Penalize values below 1.33
+        return loss / volume.numel()  # Normalize by total elements
 
     def total_variation_regularization(self, delta_n):
         """
@@ -554,8 +568,8 @@ class Tomography(dl.Application):
         # Rotate the volume and estimate the projections
         for i in range(quaternions.shape[0]):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
-             #Check if imaging model is a nn.Module
 
+             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projection = self.imaging_model(rotated_volume)
 
@@ -573,6 +587,10 @@ class Tomography(dl.Application):
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
                         estimated_projection = estimated_projection.permute(2, 0, 1)
+
+                #Add channel dimension if not present
+                if len(estimated_projection.shape) == 2:
+                    estimated_projection = estimated_projection.unsqueeze(0)
 
                 estimated_projections[i] = estimated_projection
             
@@ -612,7 +630,20 @@ class Tomography(dl.Application):
         self.grid = self.grid.to(device)
         self.global_min = self.global_min.to(device)
         self.global_max = self.global_max.to(device)
-   
+    
+    def toggle_grad(self, requires_grad):
+        """
+        Toggle the requires_grad attribute of all parameters.
+        """
+        for param in self.parameters():
+            param.requires_grad = requires_grad
+
+    def toggle_gradients_quaternion(self, requires_grad):
+        """
+        Toggle the requires_grad attribute of the quaternion parameters.
+        """
+        self.rotation_params.requires_grad = requires_grad
+
 # Testing the code
 if __name__ == "__main__":
     import numpy as np
@@ -623,7 +654,7 @@ if __name__ == "__main__":
 
     data = np.load('../test_data/test_data_cf.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
-    #projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1) if projections is not None else None
+    #projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
     # Projections is a real and imaginary part of the projections
     
     projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
@@ -653,7 +684,7 @@ if __name__ == "__main__":
     N = projections.shape[-1]
   
     # Create the tomography model
-    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='zeros', imaging_model=imaging_model)
+    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
 
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
@@ -665,7 +696,7 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
-    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=25, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
 
     # Plot the training history
@@ -674,8 +705,10 @@ if __name__ == "__main__":
     except:
         print("No history to plot...")
 
+
     # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
+
 
 
     #Check if tomo.volume has gradients
