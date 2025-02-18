@@ -654,14 +654,14 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data_cf.npz', allow_pickle=True)
+    data = np.load('../test_data/test_data_cf_s.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
-    #projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
+    projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
     # Projections is a real and imaginary part of the projections
     
-    projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
+    #projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
     #projections = torch.tensor(projections.imag, dtype=torch.float32).squeeze(-1)
-    projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
+    #projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
 
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
     #test_object = test_object.unsqueeze(0)
@@ -678,9 +678,9 @@ if __name__ == "__main__":
         test_object = None
 
     # Dummy Imaging model
-    #imaging_model = vm.Dummy3d2d()
-    optics_setup = imb.setup_optics(nsize=48)
-    imaging_model = imb.imaging_model(optics_setup)
+    imaging_model = vm.Dummy3d2d()
+    #optics_setup = imb.setup_optics(nsize=48)
+    #imaging_model = imb.imaging_model(optics_setup)
 
     # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
@@ -699,7 +699,7 @@ if __name__ == "__main__":
     idx = torch.arange(N)
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     # Plot the training history
@@ -711,8 +711,6 @@ if __name__ == "__main__":
 
     # Visualize the final volume and rotations.
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
-
-
 
     #Check if tomo.volume has gradients
     print(tomo.volume.grad)
