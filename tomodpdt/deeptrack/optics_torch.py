@@ -1218,7 +1218,7 @@ class Fluorescence(Optics):
 
         output_image = output_image[pad[0]: -pad[2], pad[1]: -pad[3]]
 
-        # Some better way to do this pobably...
+        # Some better way to do this probably...
         illuminated_volume = Image(illuminated_volume)
         pupils = Image(pupils[0])
         
@@ -1500,6 +1500,207 @@ class Brightfield(Optics):
         output_image.properties = illuminated_volume.properties
 
         return output_image
+
+class ISCAT(Brightfield):
+    """Images coherently illuminated samples using Interferometric Scattering 
+    (ISCAT) microscopy.
+
+    This class models ISCAT by creating a discretized volume where each pixel
+    represents the effective refractive index of the sample. Light is 
+    propagated through the sample iteratively, first in the Fourier space 
+    and then corrected in the real space for refractive index.
+
+    Parameters
+    ----------
+    illumination: Feature
+        Feature-set defining the complex field entering the sample. Default 
+        is a field with all values set to 1.
+    NA: float
+        Numerical aperture (NA) of the limiting aperture.
+    wavelength: float
+        Wavelength of the scattered light, in meters.
+    magnification: float
+        Magnification factor of the optical system.
+    resolution: array_like of float
+        Pixel spacing in the camera. Optionally includes a third value for 
+        z-direction resolution.
+    refractive_index_medium: float
+        Refractive index of the medium surrounding the sample.
+    padding: array_like of int
+        Padding for the sample volume to minimize edge effects. Format: 
+        (left, right, top, bottom).
+    output_region: array_like of int
+        Region of the image to output as (x, y, width, height). If None 
+        (default), the entire image is returned.
+    pupil: Feature
+        Feature-set defining the pupil function at focus. The feature-set 
+        takes an unaberrated pupil as input.
+    illumination_angle: float, optional
+        Angle of illumination relative to the optical axis, in radians. 
+        Default is π radians.
+    amp_factor: float, optional
+        Amplitude factor of the illuminating field relative to the reference 
+        field. Default is 1.
+
+    Attributes
+    ----------
+    illumination_angle: float
+        The angle of illumination, stored for reference.
+    amp_factor: float
+        Amplitude factor of the illuminating field.
+
+    Examples
+    --------
+    Creating an ISCAT instance:
+    
+    >>> import deeptrack as dt
+
+    >>> iscat = dt.ISCAT(NA=1.4, wavelength=0.532e-6, magnification=60)
+    >>> print(iscat.illumination_angle())
+    3.141592653589793
+    
+    """
+
+    def __init__(
+        self:  'ISCAT',
+        illumination_angle: float = np.pi,
+        amp_factor: float = 1, 
+        **kwargs: Dict[str, Any],
+    ) -> None:
+        """Initializes the ISCAT class.
+
+        Parameters
+        ----------
+        illumination_angle: float
+            The angle of illumination, in radians.
+        amp_factor: float
+            Amplitude factor of the illuminating field relative to the reference 
+            field.
+        **kwargs: Dict[str, Any]
+            Additional parameters for the Brightfield class.
+
+        """
+
+        super().__init__(
+            illumination_angle=illumination_angle,
+            amp_factor=amp_factor,
+            input_polarization="circular",
+            output_polarization="circular",
+            phase_shift_correction=True,
+            **kwargs
+            )
+        
+class Darkfield(Brightfield):
+    """Images coherently illuminated samples using Darkfield microscopy.
+
+    This class models Darkfield microscopy by creating a discretized volume 
+    where each pixel represents the effective refractive index of the sample. 
+    Light is propagated through the sample iteratively, first in the Fourier 
+    space and then corrected in the real space for refractive index.
+
+    Parameters
+    ----------
+    illumination: Feature
+        Feature-set defining the complex field entering the sample. Default 
+        is a field with all values set to 1.
+    NA: float
+        Numerical aperture (NA) of the limiting aperture.
+    wavelength: float
+        Wavelength of the scattered light, in meters.
+    magnification: float
+        Magnification factor of the optical system.
+    resolution: array_like of float
+        Pixel spacing in the camera. Optionally includes a third value for 
+        z-direction resolution.
+    refractive_index_medium: float
+        Refractive index of the medium surrounding the sample.
+    padding: array_like of int
+        Padding for the sample volume to minimize edge effects. Format: 
+        (left, right, top, bottom).
+    output_region: array_like of int
+        Region of the image to output as (x, y, width, height). If None 
+        (default), the entire image is returned.
+    pupil: Feature
+        Feature-set defining the pupil function at focus. The feature-set 
+        takes an unaberrated pupil as input.
+    illumination_angle: float, optional
+        Angle of illumination relative to the optical axis, in radians. 
+        Default is π/2 radians.
+
+    Attributes
+    ----------
+    illumination_angle: float
+        The angle of illumination, stored for reference.
+
+    Methods
+    -------
+    get(illuminated_volume, limits, fields, **kwargs)
+        Retrieves the darkfield image of the illuminated volume.
+
+    Examples
+    --------
+    Creating a Darkfield instance:
+
+    >>> import deeptrack as dt
+
+    >>> darkfield = dt.Darkfield(NA=0.9, wavelength=0.532e-6)
+    >>> print(darkfield.illumination_angle())
+    1.5707963267948966
+
+    """
+
+    def __init__(
+        self: 'Darkfield', 
+        illumination_angle: float = np.pi/2, 
+        **kwargs: Dict[str, Any]
+    ) -> None:
+        """Initializes the Darkfield class.
+
+        Parameters
+        ----------
+        illumination_angle: float
+            The angle of illumination, in radians.
+        **kwargs: Dict[str, Any]
+            Additional parameters for the Brightfield class.
+
+        """
+
+        super().__init__(
+            illumination_angle=illumination_angle,
+            **kwargs)
+
+    #Retrieve get as super
+    def get(
+        self: 'Darkfield',
+        illuminated_volume: ArrayLike[complex],
+        limits: ArrayLike[int],
+        fields: ArrayLike[complex],
+        **kwargs: Dict[str, Any],
+    ) -> Image:
+        """Retrieve the darkfield image of the illuminated volume.
+
+        Parameters
+        ----------
+        illuminated_volume: array_like
+            The volume of the sample being illuminated.
+        limits: array_like
+            The spatial limits of the volume.
+        fields: array_like
+            The fields interacting with the sample.
+        **kwargs: Dict[str, Any]
+            Additional parameters passed to the super class's get method.
+
+        Returns
+        -------
+        numpy.ndarray
+            The darkfield image obtained by calculating the squared absolute
+            difference from 1.
+        
+        """
+
+        field = super().get(illuminated_volume, limits, fields, return_field=True, **kwargs)
+        field._value = torch.square(torch.abs(field._value-1))
+        return field
 
 class IlluminationGradient(Feature):
     """

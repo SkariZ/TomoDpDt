@@ -156,7 +156,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, sigma = 0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 
@@ -169,11 +169,15 @@ def visualize_3d_volume(volume, surface_count=15, opacity=0.5, bgcolor='black', 
 
     """
     import plotly.graph_objects as go
+    from scipy import ndimage
 
     # Generate the x, y, and z coordinate grids for the volume
     x = np.arange(volume.shape[0]).repeat(volume.shape[1] * volume.shape[2])  # Repeats each x-value across the grid
     y = np.tile(np.arange(volume.shape[1]).repeat(volume.shape[2]), volume.shape[0])  # Repeats each y-value within z slices
     z = np.tile(np.arange(volume.shape[2]), volume.shape[0] * volume.shape[1])  # Repeats z-values across the full grid
+
+    # Gaussian smoothing for better visualization
+    volume = ndimage.gaussian_filter(volume, sigma=sigma)
 
     # Determine dynamic isosurface bounds based on the volume
     isomin = volume.min() + 0.1 * (volume.max() - volume.min())
