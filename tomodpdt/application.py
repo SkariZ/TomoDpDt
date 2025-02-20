@@ -16,6 +16,7 @@ import deeptrack as dt
 from deeplay.external import Adam
 
 import numpy as np
+import time
 #data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
 #QGT = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
@@ -100,7 +101,7 @@ class Tomography(dl.Application):
             self.vae_model.fc_mu=vae.fc_mu
             self.vae_model.fc_var=vae.fc_var
             self.vae_model.fc_dec=vae.fc_dec
-            self.vae_model.beta = 0.01
+            self.vae_model.beta = 0.025
             
         # Normalize projections
         if 'normalize' in kwargs and kwargs['normalize']:
@@ -372,7 +373,7 @@ class Tomography(dl.Application):
         proj_loss *= 10
         latent_loss *= 0.5
         rtv_loss *= 0.5
-        so_loss *= 0
+        so_loss *= 0.1
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
@@ -654,36 +655,29 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/test_data_cf_s.npz', allow_pickle=True)
+    data = np.load('../test_data/projections_fix_brightfield.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
     projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
-    # Projections is a real and imaginary part of the projections
     
-    #projections = torch.tensor(projections, dtype=torch.complex64).unsqueeze(1)
-    #projections = torch.tensor(projections.imag, dtype=torch.float32).squeeze(-1)
-    #projections = torch.concat((projections.real, projections.imag), dim=1).squeeze(-1)
-
     test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
-    #test_object = test_object.unsqueeze(0)
 
     q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
     #Downsample the projections 2x and downsample the object 2x
-    scale = 0.5
+    scale = 1
     projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
-    
     try:
         test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
     except:
         test_object = None
 
-    # Dummy Imaging model
-    imaging_model = vm.Dummy3d2d()
-    #optics_setup = imb.setup_optics(nsize=48)
-    #imaging_model = imb.imaging_model(optics_setup)
-
     # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
+
+    # Dummy Imaging model
+    #imaging_model = vm.Dummy3d2d()
+    optics_setup = imb.setup_optics(nsize=N)
+    imaging_model = imb.imaging_model(optics_setup)
   
     # Create the tomography model
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
@@ -698,9 +692,19 @@ if __name__ == "__main__":
     N = len(tomo.frames)
     idx = torch.arange(N)
 
+    start_time = time.time()
+
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
+
+    # Toggle the gradients of the quaternion parameters
+    #tomo.toggle_gradients_quaternion(True)
+    #tomo.move_all_to_device("cuda")
+    #trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    #trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
+
+    print("Training time: ", (time.time() - start_time) / 60, " minutes")
 
     # Plot the training history
     try:
@@ -713,4 +717,4 @@ if __name__ == "__main__":
     plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
 
     #Check if tomo.volume has gradients
-    print(tomo.volume.grad)
+    #print(tomo.volume.grad)
