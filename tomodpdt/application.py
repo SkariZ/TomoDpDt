@@ -373,7 +373,9 @@ class Tomography(dl.Application):
         proj_loss *= 10
         latent_loss *= 0.5
         rtv_loss *= 0.5
-        so_loss *= 0.1
+        so_loss *= 1
+        q0_loss *= 100
+        qv_loss *= 10
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
@@ -552,7 +554,9 @@ class Tomography(dl.Application):
         Returns:
         - estimated_projections (torch.Tensor): Estimated projections.
         """
-        self.basis = self.basis.to(self._device)
+        if self.rotation_optim_case == 'basis':
+            self.basis = self.basis.to(self._device)
+
         self.rotation_params = self.rotation_params.to(self._device)
 
         quaternions = self.get_quaternions(self.rotation_params).to(self._device)
@@ -629,7 +633,8 @@ class Tomography(dl.Application):
         self.to(device)
         self.rotation_params = self.rotation_params.to(device)
         self.volume = self.volume.to(device)
-        self.basis = self.basis.to(device)
+        if self.rotation_optim_case == 'basis':
+            self.basis = self.basis.to(device)
         self.grid = self.grid.to(device)
         self.global_min = self.global_min.to(device)
         self.global_max = self.global_max.to(device)
@@ -647,6 +652,7 @@ class Tomography(dl.Application):
         """
         self.rotation_params.requires_grad = requires_grad
 
+
 # Testing the code
 if __name__ == "__main__":
     import numpy as np
@@ -655,7 +661,7 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/projections_fix_brightfield.npz', allow_pickle=True)
+    data = np.load('../test_data/projections_tilt_sum.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
     projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
     
@@ -675,9 +681,9 @@ if __name__ == "__main__":
     N = projections.shape[-1]
 
     # Dummy Imaging model
-    #imaging_model = vm.Dummy3d2d()
-    optics_setup = imb.setup_optics(nsize=N)
-    imaging_model = imb.imaging_model(optics_setup)
+    imaging_model = vm.Dummy3d2d()
+    #optics_setup = imb.setup_optics(nsize=N)
+    #imaging_model = imb.imaging_model(optics_setup)
   
     # Create the tomography model
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
@@ -695,14 +701,14 @@ if __name__ == "__main__":
     start_time = time.time()
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
-    # Toggle the gradients of the quaternion parameters
-    #tomo.toggle_gradients_quaternion(True)
-    #tomo.move_all_to_device("cuda")
-    #trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-    #trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
+    #Toggle the gradients of the quaternion parameters
+    tomo.toggle_gradients_quaternion(True)
+    tomo.move_all_to_device("cuda")
+    trainer = dl.Trainer(max_epochs=200, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")
 

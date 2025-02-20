@@ -15,7 +15,7 @@ def process_latent_space(
     min_peaks=2,
     prominence=0.5,
     height_factor=0.75,
-    basis_functions=15,
+    basis_functions=12,
     **kwargs
 ):
     """
@@ -28,6 +28,7 @@ def process_latent_space(
     - step_size (int): Step size for frame selection.
     - normalize (bool): Whether to normalize frames.
     - initial_axes (str): Axis for rotations ('x', 'y', 'z').
+    - quaternions (torch.Tensor): Initial quaternions.
     - peaks_period_range (list): Range for peak detection.
     - window_length (int): Window length for smoothing.
     - polyorder (int): Polynomial order for smoothing.
@@ -36,6 +37,7 @@ def process_latent_space(
     - prominence (float): Prominence for peak detection.
     - height_factor (float): Height factor for peak detection.
     - basis_functions (int): Number of basis functions.
+    - kwargs: Additional keyword arguments.
     
     Returns:
     - dict: Processed data containing quaternions, coefficients, basis functions, peaks, and smoothed distances.

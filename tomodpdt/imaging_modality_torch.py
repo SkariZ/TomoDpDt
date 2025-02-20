@@ -4,12 +4,13 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
-def setup_optics(nsize, wavelength=532e-9, resolution=100e-9, magnification=1, return_field=True):
+def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, resolution=100e-9, magnification=1, return_field=True):
     """
     Set up the optical system, prepare simulation parameters, and compute the optical image.
 
     Args:
         nsize (int): Size of the volume grid.
+        microscopy_regime (str): Microscopy regime (default 'Brightfield').
         wavelength (float): Wavelength of light in meters (default 532 nm).
         resolution (float): Optical resolution in meters (default 100 nm).
         magnification (float): Magnification factor (default 1).
@@ -20,13 +21,38 @@ def setup_optics(nsize, wavelength=532e-9, resolution=100e-9, magnification=1, r
     """
 
     # Define the optics
-    optics = dt.optics_torch.Fluorescence(
-        wavelength=wavelength,
-        resolution=resolution,
-        magnification=magnification,
-        output_region=(0, 0, nsize, nsize),
-        #return_field=return_field
-    )
+    if microscopy_regime == 'Brightfield':
+        optics = dt.optics_torch.Brightfield(
+            wavelength=wavelength,
+            resolution=resolution,
+            magnification=magnification,
+            output_region=(0, 0, nsize, nsize),
+            return_field=return_field
+        )
+    elif microscopy_regime == 'Fluorescence':
+        optics = dt.optics_torch.Fluorescence(
+            wavelength=wavelength,
+            resolution=resolution,
+            magnification=magnification,
+            output_region=(0, 0, nsize, nsize),
+            #return_field=return_field
+        )
+    elif microscopy_regime == 'Darkfield':
+        optics = dt.optics_torch.Darkfield(
+            wavelength=wavelength,
+            resolution=resolution,
+            magnification=magnification,
+            output_region=(0, 0, nsize, nsize),
+            return_field=return_field
+        )
+    elif microscopy_regime == 'Iscat':
+        optics = dt.optics_torch.ISCAT(
+            wavelength=wavelength,
+            resolution=resolution,
+            magnification=magnification,
+            output_region=(0, 0, nsize, nsize),
+            return_field=return_field
+        )
 
     # Define simulation limits
     limits = torch.tensor([[0, nsize], [0, nsize], [-nsize//2, nsize//2]])
@@ -44,6 +70,7 @@ def setup_optics(nsize, wavelength=532e-9, resolution=100e-9, magnification=1, r
         }   
 
     return {
+        'microscopy_regime': microscopy_regime,
         "optics": optics,
         "limits": limits,
         "fields": fields,
@@ -60,6 +87,7 @@ class imaging_model(nn.Module):
         """
 
         super().__init__()
+        self.microscopy_regime = optics_setup['microscopy_regime']
         self.optics = optics_setup['optics']
         self.limits = optics_setup['limits']
         self.fields = optics_setup['fields']
@@ -75,39 +103,43 @@ class imaging_model(nn.Module):
         Returns:
             torch.Tensor: Optical image of the object.
         """
-        # Move evertything to the same device
-        #self.limits = self.limits.to(object.device)
-        #self.fields = self.fields.to(object.device)
-        #or key in self.filtered_properties:
-        #   self.filtered_properties[key] = self.filtered_properties[key].to(object.device)
-        
         # Move everything to the same device
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
-        return self.optics.get(object, self.limits, **self.filtered_properties)
+        if self.microscopy_regime == 'Brightfield' or self.microscopy_regime == 'Darkfield' or self.microscopy_regime == 'Iscat':
+            return self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
+        
+        elif self.microscopy_regime == 'Fluorescence':
+            return self.optics.get(object, self.limits, **self.filtered_properties)
+
+        else:
+            raise ValueError('Unknown microscopy regime')
 
 if __name__ == "__main__":
 
-    nsize = 64
+    nsize = 96
     optics_setup = setup_optics(nsize)
 
     imaging_model = imaging_model(optics_setup)
 
     #Create a random object, a cube with a smaller cube inside
-    object = torch.zeros((nsize, nsize, nsize)) + 0
-    #object[24:40, 24:40, 24:40] = 1.
-    object[32, 32, 32] = 1
-
+    object = torch.zeros((96, 96, 96)) + 1.33
+    object[16:80, 16:80, 16:80] = 1.4
+    object[32:64, 32:64, 32:64] = 1.5
+    object[40:56, 40:56, 40:56] = 1.6
+    
     object = object.to(torch.device('cuda'))
 
     image = imaging_model(object)
 
     print(image.cpu().shape)
+    plt.imshow(image.cpu().imag)
+    plt.colorbar()
+    plt.show()
     plt.imshow(image.cpu().real)
     plt.colorbar()
     plt.show()
     
-    #image2 = torch.concatenate((image._value.real, image._value.imag), axis=-1)
-    #image2 = torch.swapaxes(image2, 0, 2)
-
+    image2 = torch.concatenate((image._value.real, image._value.imag), axis=-1)
+    image2 = torch.swapaxes(image2, 0, 2)
