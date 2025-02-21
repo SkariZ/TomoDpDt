@@ -701,13 +701,13 @@ if __name__ == "__main__":
     start_time = time.time()
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=5, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
     tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=200, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")

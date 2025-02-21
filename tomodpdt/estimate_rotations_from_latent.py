@@ -48,9 +48,9 @@ def process_latent_space(
         frames = torch.tensor(frames)
 
     if initial_axes is None:
-        # Estimate the initial axis by looking at the std in the latent space
-        std_x = torch.std(frames, dim=(0, 1, 2)).sum()
-        std_y = torch.std(frames, dim=(0, 1, 3)).sum()
+        # Estimate the initial axis by looking at the std in the frames along x and y
+        std_x = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 2)).sum()
+        std_y = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 3)).sum()
 
         if std_x > std_y:
             initial_axes = 'x'
