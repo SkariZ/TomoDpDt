@@ -1845,7 +1845,7 @@ class IlluminationGradient(Feature):
 
 
 def _get_position(
-    image:  Image,
+    image: Image,
     mode: str = "corner",
     return_z: bool = False,
 ) -> np.ndarray:

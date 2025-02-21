@@ -4,6 +4,7 @@ import torch
 import torch.nn as nn
 import matplotlib.pyplot as plt
 
+
 def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, resolution=100e-9, magnification=1, return_field=True):
     """
     Set up the optical system, prepare simulation parameters, and compute the optical image.
@@ -20,8 +21,11 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
         dict: A dictionary containing optics object, limits, fields, properties, and computed image.
     """
 
+    # To enable case-insensitive comparison
+    microscopy_regime = microscopy_regime.lower()
+
     # Define the optics
-    if microscopy_regime == 'Brightfield':
+    if microscopy_regime == 'brightfield':
         optics = dt.optics_torch.Brightfield(
             wavelength=wavelength,
             resolution=resolution,
@@ -29,23 +33,23 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
             output_region=(0, 0, nsize, nsize),
             return_field=return_field
         )
-    elif microscopy_regime == 'Fluorescence':
+    elif microscopy_regime == 'fluorescence':
         optics = dt.optics_torch.Fluorescence(
+            wavelength=wavelength,
+            resolution=resolution,
+            magnification=magnification,
+            output_region=(0, 0, nsize, nsize),
+            # return_field=return_field
+        )
+    elif microscopy_regime == 'darkfield':
+        optics = dt.optics_torch.Darkfield(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
             output_region=(0, 0, nsize, nsize),
             #return_field=return_field
         )
-    elif microscopy_regime == 'Darkfield':
-        optics = dt.optics_torch.Darkfield(
-            wavelength=wavelength,
-            resolution=resolution,
-            magnification=magnification,
-            output_region=(0, 0, nsize, nsize),
-            return_field=return_field
-        )
-    elif microscopy_regime == 'Iscat':
+    elif microscopy_regime == 'iscat':
         optics = dt.optics_torch.ISCAT(
             wavelength=wavelength,
             resolution=resolution,
@@ -65,7 +69,8 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
     properties = optics.properties()
     filtered_properties = {
         k: v for k, v in properties.items()
-        if k in {'padding', 'output_region', 'NA', 'wavelength', 
+        if k in {'padding', 'output_region',
+                 'NA', 'wavelength',
                  'refractive_index_medium', 'return_field'}
         }   
 
@@ -77,21 +82,29 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
         "filtered_properties": filtered_properties,
         }
 
+
 class imaging_model(nn.Module):
     def __init__(self, optics_setup):
         """
         Initialize the imaging model.
 
         Args:
-            optics_setup (dict): A dictionary containing optics object, limits, fields, properties, and computed image.
+            optics_setup (dict): A dictionary containing optics
+            object, limits, fields, properties, and computed image.
         """
 
         super().__init__()
-        self.microscopy_regime = optics_setup['microscopy_regime']
+        self.microscopy_regime = optics_setup['microscopy_regime'].lower()
         self.optics = optics_setup['optics']
         self.limits = optics_setup['limits']
         self.fields = optics_setup['fields']
         self.filtered_properties = optics_setup['filtered_properties']
+
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+
+        # Move everything to the same device
+        self.limits = self.limits.to(self.device)
+        self.fields = self.fields.to(self.device)
 
     def forward(self, object):
         """
@@ -103,27 +116,35 @@ class imaging_model(nn.Module):
         Returns:
             torch.Tensor: Optical image of the object.
         """
-        # Move everything to the same device
-        self.limits = self.limits.to(object.device)
-        self.fields = self.fields.to(object.device)
 
-        if self.microscopy_regime == 'Brightfield' or self.microscopy_regime == 'Darkfield' or self.microscopy_regime == 'Iscat':
+        if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat':
             return self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
         
-        elif self.microscopy_regime == 'Fluorescence':
+        elif self.microscopy_regime == 'fluorescence':
             return self.optics.get(object, self.limits, **self.filtered_properties)
 
         else:
             raise ValueError('Unknown microscopy regime')
 
+
+class Dummy3d2d(nn.Module):
+    def __init__(self, dim=-1):
+        self.dim = dim
+        super(Dummy3d2d, self).__init__()
+
+    def forward(self, x):
+        # Return projection of the 3D volume
+        return x.sum(dim=self.dim)
+
+
 if __name__ == "__main__":
 
     nsize = 96
-    optics_setup = setup_optics(nsize)
+    optics_setup = setup_optics(nsize, microscopy_regime='darkfield')
 
-    imaging_model = imaging_model(optics_setup)
+    im_model = imaging_model(optics_setup)
 
-    #Create a random object, a cube with a smaller cube inside
+    # Create a random object, a cube with a smaller cube inside
     object = torch.zeros((96, 96, 96)) + 1.33
     object[16:80, 16:80, 16:80] = 1.4
     object[32:64, 32:64, 32:64] = 1.5
@@ -131,7 +152,7 @@ if __name__ == "__main__":
     
     object = object.to(torch.device('cuda'))
 
-    image = imaging_model(object)
+    image = im_model(object)
 
     print(image.cpu().shape)
     plt.imshow(image.cpu().imag)

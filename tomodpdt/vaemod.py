@@ -139,12 +139,13 @@ class ConvVAE(nn.Module):
 
 
 class Dummy3d2d(nn.Module):
-    def __init__(self):
+    def __init__(self, dim=-1):
+        self.dim = dim
         super(Dummy3d2d, self).__init__()
 
     def forward(self, x):
         #Return projection of the 3D volume
-        return x.sum(dim=-1)
+        return x.sum(dim=self.dim)
 
 
 if __name__ == "__main__":

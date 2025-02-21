@@ -661,7 +661,7 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/projections_tilt_sum.npz', allow_pickle=True)
+    data = np.load('../test_data/projections_tilt_brightfield.npz', allow_pickle=True)
     projections = data["projections"] if "projections" in data else None
     projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
     
@@ -681,9 +681,9 @@ if __name__ == "__main__":
     N = projections.shape[-1]
 
     # Dummy Imaging model
-    imaging_model = vm.Dummy3d2d()
-    #optics_setup = imb.setup_optics(nsize=N)
-    #imaging_model = imb.imaging_model(optics_setup)
+    #imaging_model = vm.Dummy3d2d()
+    optics_setup = imb.setup_optics(nsize=N)
+    imaging_model = imb.imaging_model(optics_setup)
   
     # Create the tomography model
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
@@ -701,13 +701,13 @@ if __name__ == "__main__":
     start_time = time.time()
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=5, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
     tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")
