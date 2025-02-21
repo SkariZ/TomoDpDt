@@ -41,6 +41,7 @@ def plots_initial(tomo, gt=None):
     # Add a vertical line where q1 ends
     plt.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
     if gt is not None:
+        gt = gt.cpu().numpy()
         plt.plot(gt[:, 0], '--', label=r'$q_0$', linewidth=2)
         plt.plot(gt[:, 1], '--', label=r'$q_1$', linewidth=2)
         plt.plot(gt[:, 2], '--', label=r'$q_2$', linewidth=2)
@@ -156,7 +157,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, sigma = 0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 

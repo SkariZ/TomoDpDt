@@ -53,6 +53,9 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
         quaternions = R.generate_sinusoidal_quaternion(duration=2, samples=samples)
     elif rotation_case == 'random_sinusoidal':
         quaternions = R.generate_random_sinusoidal_quaternion(duration=2, samples=samples, noise=0.001)
+    elif rotation_case == '1ax':
+        quaternions = R.generate_random_sinusoidal_quaternion(duration=2, samples=samples, phi=0, psi=0, noise=0.001)
+        
     quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
     ch = 1
@@ -86,7 +89,7 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
         # Progress in percentage
         if i % 100 == 0: 
             print(f'{i/samples * 100:.1f}%')
-            
+
         volume_new = rotmod.apply_rotation(
             volume=torch.tensor(volume, dtype=torch.float32).to('cuda'), 
             q=torch.tensor(quaternions[i], dtype=torch.float32).to('cuda')
@@ -105,7 +108,7 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
         if image_modality.lower() in ['darkfield', 'iscat', 'fluorescence']:
             projections[i, 0] = image.cpu().squeeze()
     
-    return object, quaternions, projections
+    return object, quaternions, projections, imaging_model
 
 
 if __name__=='__main__':

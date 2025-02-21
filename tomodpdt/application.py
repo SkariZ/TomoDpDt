@@ -517,31 +517,16 @@ class Tomography(dl.Application):
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
         return rotated_volume.squeeze()
 
-    def gaussian_blur_projection(self, projections, sigma=1):
+    def proposition_quaternions(self):
         """
-        Apply Gaussian blur to a set of projections.
+        Since normalizing the quaternions do not take sign into account, the quaternions can be flipped.
+        This function proposes the correct sign of the quaternions. I.e check if the projections are minimized 
+        by the current quaternions or if a sign flip is needed.
 
-        Args:
-        - projections (torch.Tensor): A tensor of shape (N, H, W) representing N projections.
-        - sigma (float): Standard deviation of the Gaussian kernel.
-
-        Returns:
-        - blurred_projections (torch.Tensor): Blurred projections.
         """
-        # Create Gaussian kernel
-        kernel_size = 2 * int(3 * sigma) + 1
-        grid = torch.arange(kernel_size, dtype=projections.dtype, device=projections.device) - kernel_size // 2
-        x, y = torch.meshgrid(grid, grid, indexing='ij')
-        kernel = torch.exp(-(x**2 + y**2) / (2 * sigma**2))
-        kernel = kernel / kernel.sum()
 
-        # Reshape kernel to match conv2d input requirements
-        kernel = kernel.view(1, 1, kernel_size, kernel_size)
+        pass
 
-        # Apply Gaussian blur
-        blurred_projections = F.conv2d(projections, kernel, padding=kernel_size // 2)
-
-        return blurred_projections
 
     def full_forward_final(self):
         """
@@ -576,11 +561,11 @@ class Tomography(dl.Application):
         for i in range(quaternions.shape[0]):
             rotated_volume = self.apply_rotation(volume, quaternions[i])
 
-             #Check if imaging model is a nn.Module
+             # Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projection = self.imaging_model(rotated_volume)
 
-                #Check if estimated_projections has a function _value
+                # Check if estimated_projections has a function _value
                 if hasattr(estimated_projection, '_value') and self.CH > 1:
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
@@ -661,13 +646,17 @@ if __name__ == "__main__":
     from importlib import reload
     reload(plotting)
 
-    data = np.load('../test_data/projections_tilt_brightfield.npz', allow_pickle=True)
-    projections = data["projections"] if "projections" in data else None
-    projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
-    
-    test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
+    import simulate as sim
 
-    q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
+    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=200)
+
+    #data = np.load('../test_data/projections_tilt_brightfield.npz', allow_pickle=True)
+    #projections = data["projections"] if "projections" in data else None
+    #projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
+    
+    #test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
+
+    #q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
 
     #Downsample the projections 2x and downsample the object 2x
     scale = 1
@@ -682,8 +671,8 @@ if __name__ == "__main__":
 
     # Dummy Imaging model
     #imaging_model = vm.Dummy3d2d()
-    optics_setup = imb.setup_optics(nsize=N)
-    imaging_model = imb.imaging_model(optics_setup)
+    #optics_setup = imb.setup_optics(nsize=N)
+    #imaging_model = imb.imaging_model(optics_setup)
   
     # Create the tomography model
     tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
@@ -692,7 +681,7 @@ if __name__ == "__main__":
     tomo.initialize_parameters(projections, normalize=True)
     
     # Visualize the latent space and the initial rotations
-    plotting.plots_initial(tomo, gt=q_gt)
+    plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
 
     # Train the model
     N = len(tomo.frames)
@@ -701,14 +690,14 @@ if __name__ == "__main__":
     start_time = time.time()
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
     tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
+    trainer = dl.Trainer(max_epochs=200, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")
 
@@ -720,7 +709,7 @@ if __name__ == "__main__":
 
 
     # Visualize the final volume and rotations.
-    plotting.plots_optim(tomo, gt_q=q_gt, gt_v=test_object)
+    plotting.plots_optim(tomo, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
 
     #Check if tomo.volume has gradients
     #print(tomo.volume.grad)

@@ -1694,13 +1694,14 @@ class Darkfield(Brightfield):
         -------
         numpy.ndarray
             The darkfield image obtained by calculating the squared absolute
-            difference from 1.
+            difference from 1.dee
         
         """
 
         field = super().get(illuminated_volume, limits, fields, return_field=True, **kwargs)
         field._value = torch.square(torch.abs(field._value-1))
         return field
+
 
 class IlluminationGradient(Feature):
     """

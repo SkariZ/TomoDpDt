@@ -50,7 +50,7 @@ from deeptrack.augmentations import *
 
 from deeptrack.math import *
 from deeptrack.noises import *
-from deeptrack.optics import *
+#from deeptrack.optics import *
 from deeptrack.optics_torch import *
 from deeptrack.scatterers import *
 from deeptrack.sequences import *

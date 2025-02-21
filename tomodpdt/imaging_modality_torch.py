@@ -26,7 +26,7 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
 
     # Define the optics
     if microscopy_regime == 'brightfield':
-        optics = dt.optics_torch.Brightfield(
+        optics = dt.Brightfield(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
@@ -34,7 +34,7 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
             return_field=return_field
         )
     elif microscopy_regime == 'fluorescence':
-        optics = dt.optics_torch.Fluorescence(
+        optics = dt.Fluorescence(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
@@ -42,7 +42,7 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
             # return_field=return_field
         )
     elif microscopy_regime == 'darkfield':
-        optics = dt.optics_torch.Darkfield(
+        optics = dt.Darkfield(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
@@ -50,7 +50,7 @@ def setup_optics(nsize, microscopy_regime='Brightfield', wavelength=532e-9, reso
             #return_field=return_field
         )
     elif microscopy_regime == 'iscat':
-        optics = dt.optics_torch.ISCAT(
+        optics = dt.ISCAT(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
@@ -140,15 +140,15 @@ class Dummy3d2d(nn.Module):
 if __name__ == "__main__":
 
     nsize = 96
-    optics_setup = setup_optics(nsize, microscopy_regime='darkfield')
+    optics_setup = setup_optics(nsize, microscopy_regime='iscat')
 
     im_model = imaging_model(optics_setup)
 
     # Create a random object, a cube with a smaller cube inside
     object = torch.zeros((96, 96, 96)) + 1.33
-    object[16:80, 16:80, 16:80] = 1.4
-    object[32:64, 32:64, 32:64] = 1.5
-    object[40:56, 40:56, 40:56] = 1.6
+    object[16:80, 16:80, 16:80] = 1.35
+    object[32:64, 32:64, 32:64] = 1.4
+    object[40:56, 40:56, 40:56] = 1.42
     
     object = object.to(torch.device('cuda'))
 

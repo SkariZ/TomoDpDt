@@ -59,9 +59,9 @@ def generate_random_sinusoidal_quaternion(omega=2 * np.pi, phi=np.pi / 8, psi=np
     q3 = np.sin(omega * t) * np.sin(phi) * np.sin(psi)
 
     # Shuffle the name of the components
-    components = [q1, q2, q3]
+    components = [q1, q2]
     np.random.shuffle(components)
-    q1, q2, q3 = components
+    q1, q2 = components
     
     # Normalize quaternion to ensure it remains valid
     norm = np.sqrt(q0**2 + q1**2 + q2**2 + q3**2)
