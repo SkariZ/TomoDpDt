@@ -102,10 +102,6 @@ class imaging_model(nn.Module):
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-        # Move everything to the same device
-        self.limits = self.limits.to(self.device)
-        self.fields = self.fields.to(self.device)
-
     def forward(self, object):
         """
         Compute the optical image of an object.
@@ -116,6 +112,10 @@ class imaging_model(nn.Module):
         Returns:
             torch.Tensor: Optical image of the object.
         """
+
+        # Move everything to the same device
+        self.limits = self.limits.to(object.device)
+        self.fields = self.fields.to(object.device)
 
         if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat':
             return self.optics.get(object, self.limits, self.fields, **self.filtered_properties)

@@ -525,8 +525,66 @@ class Tomography(dl.Application):
 
         """
 
-        pass
+        # There will be all combinations of the three axes
+        signs = torch.tensor([
+            [1, 1, 1, 1], [1, 1, 1, -1], [1, 1, -1, 1], 
+            [1, 1, -1, -1], [1, -1, 1, 1], [1, -1, 1, -1], 
+            [1, -1, -1, 1], [1, -1, -1, -1]], device=self._device)
 
+        # Get the current quaternions
+        quaternions = self.get_quaternions(self.rotation_params)
+
+        Losses = torch.zeros(signs.shape[0], device=self._device)
+        for s, sign in enumerate(signs):
+            quaternions_prop = quaternions * sign
+            projections_tmp = torch.zeros(quaternions_prop.shape[0], self.CH, self.N, self.N, device=self._device)
+
+            for i in range(quaternions_prop.shape[0]):
+
+                rotated_volume = self.apply_rotation(self.volume, quaternions_prop[i])
+                estimated_projection = self.imaging_model(rotated_volume)
+
+
+                if isinstance(self.imaging_model, nn.Module):
+                    estimated_projection = self.imaging_model(rotated_volume)
+
+                    #Check if estimated_projections has a function _value
+                    if hasattr(estimated_projection, '_value') and self.CH > 1:
+                        estimated_projection = torch.concatenate(
+                            (estimated_projection._value.real, estimated_projection._value.imag),
+                            axis=-1)
+                        estimated_projection = estimated_projection.permute(2, 0, 1)
+
+                    elif hasattr(estimated_projection, '_value') and self.CH == 1:
+                        estimated_projection = estimated_projection._value
+
+                        # Check if the estimated projection is complex and take the imaginary part
+                        if estimated_projection.dtype == torch.complex64:
+                            estimated_projection = estimated_projection.imag
+                            estimated_projection = estimated_projection.permute(2, 0, 1)
+
+                    #Add channel dimension if not present
+                    if len(estimated_projection.shape) == 2:
+                        estimated_projection = estimated_projection.unsqueeze(0)
+
+                    projections_tmp[i] = estimated_projection
+                
+                else:
+                    raise ValueError("Imaging model must be a nn.Module.")
+                
+            # Normalize the projections
+            if self.normalize:
+                projections_tmp = self.per_channel_normalization(projections_tmp)
+
+            # Compute the loss
+            loss = F.l1_loss(projections_tmp, self.frames)
+            Losses[s] = loss
+        print(Losses)
+        # Get the index of the minimum loss
+        idx = torch.argmin(Losses)
+
+        # Return the quaternions with the lowest loss
+        return quaternions * signs[idx]
 
     def full_forward_final(self):
         """
@@ -648,15 +706,7 @@ if __name__ == "__main__":
 
     import simulate as sim
 
-    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=200)
-
-    #data = np.load('../test_data/projections_tilt_brightfield.npz', allow_pickle=True)
-    #projections = data["projections"] if "projections" in data else None
-    #projections = torch.tensor(projections, dtype=torch.float32) if projections is not None else None
-    
-    #test_object = torch.tensor(data["volume"], dtype=torch.float32) if "volume" in data else None
-
-    #q_gt = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
+    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='sum_projection', rotation_case='random_sinusoidal', samples=400)
 
     #Downsample the projections 2x and downsample the object 2x
     scale = 1
@@ -669,13 +719,13 @@ if __name__ == "__main__":
     # Assuming the projections are square and the volume is cubic
     N = projections.shape[-1]
 
-    # Dummy Imaging model
-    #imaging_model = vm.Dummy3d2d()
-    #optics_setup = imb.setup_optics(nsize=N)
-    #imaging_model = imb.imaging_model(optics_setup)
-  
     # Create the tomography model
-    tomo = Tomography(volume_size=(N, N, N), rotation_optim_case='basis', initial_volume='refraction', imaging_model=imaging_model)
+    tomo = Tomography(
+        volume_size=(N, N, N),
+        rotation_optim_case='basis',
+        initial_volume='refraction',
+        imaging_model=imaging_model
+        )
 
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
@@ -690,14 +740,14 @@ if __name__ == "__main__":
     start_time = time.time()
 
     tomo.toggle_gradients_quaternion(False)
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
+    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
 
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
     tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=200, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=False))
+    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")
 

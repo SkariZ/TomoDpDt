@@ -41,7 +41,7 @@ grid /= grid.max()
 VOL = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 
 
-def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotation_case='random_sinusoidal'):
+def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
 
     # Create a 3D object
     object = torch.tensor(volume, dtype=torch.float32, device=DEV)
