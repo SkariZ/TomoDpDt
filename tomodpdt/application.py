@@ -151,6 +151,9 @@ class Tomography(dl.Application):
         @self.optimizer.params
         def params(self):
             return self.parameters()
+        
+        # Fit the model to the data
+        #self.fit(self.frames)
 
     def compute_global_min_max(self, projections):
         """
@@ -579,7 +582,7 @@ class Tomography(dl.Application):
             # Compute the loss
             loss = F.l1_loss(projections_tmp, self.frames)
             Losses[s] = loss
-        print(Losses)
+
         # Get the index of the minimum loss
         idx = torch.argmin(Losses)
 
@@ -627,7 +630,7 @@ class Tomography(dl.Application):
                 if hasattr(estimated_projection, '_value') and self.CH > 1:
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
-                        ,axis=-1)
+                        , axis=-1)
                     estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 elif hasattr(estimated_projection, '_value') and self.CH == 1:
@@ -746,7 +749,7 @@ if __name__ == "__main__":
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
     tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
     print("Training time: ", (time.time() - start_time) / 60, " minutes")
