@@ -716,7 +716,7 @@ if __name__ == "__main__":
 
     import simulate as sim
 
-    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=400)
+    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='sum_projection', rotation_case='random_sinusoidal', samples=400)
 
     #Downsample the projections 2x and downsample the object 2x
     scale = 1
@@ -759,6 +759,7 @@ if __name__ == "__main__":
     # Swap the rotation axis.
     tomo.swap_rotation_axis()
     tomo.initialize_volume()
+    tomo.move_all_to_device("cuda")
     trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
     trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
     loss2 = trainer.callback_metrics['train_total_loss_epoch'].item()
@@ -767,7 +768,7 @@ if __name__ == "__main__":
 
     # Choose the best loss and proceed with that.
     if loss1 < loss2:
-        print("Loss 1 is better", loss1, loss2)
+        print("Loss 1 is better ie. choose optimized axis", loss1, loss2)
         tomo.volume = nn.Parameter(vol1)
         tomo.rotation_params = nn.Parameter(rot1)
     else:

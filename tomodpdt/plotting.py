@@ -2,6 +2,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import torch
 from mpl_toolkits.mplot3d import Axes3D
+from scipy.spatial.transform import Rotation as R
+
 
 def plots_initial(tomo, gt=None):
     
@@ -106,6 +108,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
             fig.colorbar(im, ax=ax[i, j])
     plt.show()
 
+    # Plot the quaternions
     plt.figure(figsize=(7, 4))
     plt.plot(quaternions_pred[:, 0], label=r'$q_0$', linewidth=2)
     plt.plot(quaternions_pred[:, 1], label=r'$q_1$', linewidth=2)
@@ -139,6 +142,7 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     # 2x2 grid of scatter plots for each component of the quaternion
     if gt_q is not None:
         fig, ax = plt.subplots(2, 2, figsize=(6, 6))
+        fig.suptitle("Scatter plots of predicted vs. true quaternion components")
         ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0])
         ax[0, 0].set_title(r'$q_0$')
         ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1])
@@ -148,6 +152,52 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
         ax[1, 1].set_title(r'$q_3$')
         plt.show()
+
+   
+    timesteps = np.arange(quaternions_pred.shape[0])  # Time indices
+
+    # Plot each quaternion component
+    fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+
+    labels = ['w', 'x', 'y', 'z']
+    for i in range(4):
+        axes[i].plot(timesteps, quaternions_pred[:, i], label='Predicted', linestyle='--', alpha=0.7)
+        if gt_q is not None:
+            axes[i].plot(timesteps, gt_q[:len(quaternions_pred), i], label='Ground Truth', alpha=0.9)
+        axes[i].set_ylabel(labels[i])
+        axes[i].legend()
+    axes[-1].set_xlabel("Time Step")
+    plt.suptitle("Quaternion Components Over Time")
+    plt.show()
+
+    # Convert to Euler angles (XYZ convention)
+    euler_pred = R.from_quat(quaternions_pred).as_euler('xyz', degrees=True)
+    if gt_q is not None:
+        euler_true = R.from_quat(gt_q[:len(quaternions_pred)]).as_euler('xyz', degrees=True)
+
+    # Unwrap to prevent discontinuities
+    euler_pred = np.unwrap(euler_pred, axis=0)
+    if gt_q is not None:
+        euler_true = np.unwrap(euler_true, axis=0)
+
+    # Time indices
+    timesteps = np.arange(quaternions_pred.shape[0])
+
+    # Plot each Euler component
+    fig, axes = plt.subplots(3, 1, figsize=(10, 6), sharex=True)
+    labels = ['Roll (X)', 'Pitch (Y)', 'Yaw (Z)']
+
+    for i in range(3):
+        axes[i].plot(timesteps, euler_pred[:, i], label='Predicted', linestyle='--', alpha=0.7)
+        if gt_q is not None:
+            axes[i].plot(timesteps, euler_true[:, i], label='Ground Truth', alpha=0.9)
+        axes[i].set_ylabel(labels[i])
+        axes[i].legend()
+
+    axes[-1].set_xlabel("Time Step")
+    plt.suptitle("Quaternion to Euler Trajectories (Fixed Discontinuities)")
+    plt.show()
+
 
     # 3D plot of the predicted object
     visualize_3d_volume(predicted_object.numpy())

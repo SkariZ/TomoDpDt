@@ -1,5 +1,6 @@
 import numpy as np
 import matplotlib.pyplot as plt
+import scipy.ndimage
 
 import deeptrack as dt
 
@@ -16,29 +17,84 @@ np.random.seed(123)
 torch.manual_seed(123)
 
 
+def generate_3d_volume(size, num_layers, layer_densities):
+    # Ensure that the number of densities matches the number of layers
+    if len(layer_densities) != num_layers:
+        raise ValueError("The number of densities must match the number of layers.")
+    
+    # Create an empty volume
+    volume = np.zeros((size, size, size))
+
+    # Define center and radius
+    center = size // 2
+    radius = size // 3
+
+    # Generate grid
+    x, y, z = np.meshgrid(np.arange(size), np.arange(size), np.arange(size))
+    distance = np.sqrt((x - center) ** 2 + (y - center) ** 2 + (z - center) ** 2)
+
+    # Create layers with custom densities
+    layer_radius = np.linspace(0, radius, num_layers + 1)
+
+    for i in range(num_layers):
+        mask = (distance < layer_radius[i+1]) & (distance >= layer_radius[i])
+        volume[mask] = layer_densities[i]
+
+    # Add noise that scales with the density of each layer
+    noise = np.zeros_like(volume)
+    for i in range(num_layers):
+        mask = (distance < layer_radius[i+1]) & (distance >= layer_radius[i])
+        layer_noise = np.random.normal(0, 0.2 * layer_densities[i], volume.shape)  # Scale noise by density
+        noise[mask] = layer_noise[mask]
+    
+    volume += noise
+    volume = np.clip(volume, 0, np.max(layer_densities))  # Keep values within the range of layer densities
+
+    # Apply slight smoothing to the structure
+    volume = scipy.ndimage.gaussian_filter(volume, sigma=1)
+
+    return volume
+
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
-RI_RANGE = (1.33, 1.35)
+RI_RANGE = (1.333, 1.36)
+VOLUME_CASE = 2
 
-grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
 
-# Gaussian blob parameters
-centers = [(16, 32, 32), (48, 32, 32), (32, 16, 32), 
-           (32, 48, 32), (32, 32, 16), (32, 32, 48),
-           ]  # Center positions
+if VOLUME_CASE == 1:
+    grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
 
-# Generate blobs
-sigma_random = np.random.uniform(2, 6, len(centers))
-for i, center in enumerate(centers):
-    x, y, z = np.indices((SIZE, SIZE, SIZE))  # 3D coordinates
-    blob = np.exp(-((x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2) / (2 * sigma_random[i]**2))
-    grid += blob  # Add each blob to the grid
+    # Gaussian blob parameters
+    centers = [(16, 32, 32), (48, 32, 32), (32, 16, 32), 
+            (32, 48, 32), (32, 32, 16), (32, 32, 48),
+            ]  # Center positions
 
-# Normalize the grid for visualization
-grid /= grid.max()
+    # Generate blobs
+    sigma_random = np.random.uniform(2, 6, len(centers))
+    for i, center in enumerate(centers):
+        x, y, z = np.indices((SIZE, SIZE, SIZE))  # 3D coordinates
+        blob = np.exp(-((x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2) / (2 * sigma_random[i]**2))
+        grid += blob  # Add each blob to the grid
 
-# Scale to RI range
-VOL = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+    # Normalize the grid for visualization
+    grid /= grid.max()
+
+    # Scale to RI range
+    VOL = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+
+elif VOLUME_CASE == 2:
+    # Parameters
+    size = 64  # Volume size (64x64x64)
+    num_layers = 6  # Number of layers inside the sphere
+
+    # Specify custom densities for each layer
+    layer_densities = [10, 1, 2, 3, 4, 10]  # You can modify this list to set custom values for each layer
+
+    # Generate the volume
+    volume = generate_3d_volume(size, num_layers, layer_densities)
+
+    # Normalize the volume for visualization
+    VOL = (volume - volume.min()) / (volume.max() - volume.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 
 
 def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
