@@ -698,6 +698,13 @@ class Tomography(dl.Application):
         """
         self.rotation_params.requires_grad = requires_grad
 
+    def swap_rotation_axis(self):
+        """ 
+        Swap the rotation axis. betwen x and y rotation. 
+        """
+        # Swap the x and y rotation
+        self.rotation_params[:, [1, 2]] = self.rotation_params[:, [2, 1]]
+
 
 # Testing the code
 if __name__ == "__main__":
@@ -709,7 +716,7 @@ if __name__ == "__main__":
 
     import simulate as sim
 
-    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='sum_projection', rotation_case='random_sinusoidal', samples=400)
+    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=400)
 
     #Downsample the projections 2x and downsample the object 2x
     scale = 1
@@ -733,18 +740,41 @@ if __name__ == "__main__":
     # Initialize the parameters
     tomo.initialize_parameters(projections, normalize=True)
     
-    # Visualize the latent space and the initial rotations
-    plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
-
     # Train the model
     N = len(tomo.frames)
     idx = torch.arange(N)
 
     start_time = time.time()
 
+    # Toggle the gradients rotation params to off for initial phase
     tomo.toggle_gradients_quaternion(False)
+
+    # First axis test.
     trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=64, shuffle=True))
+    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
+    loss1 = trainer.callback_metrics['train_total_loss_epoch'].item()
+    vol1 = tomo.volume.clone()
+    rot1 = tomo.rotation_params.clone()    
+
+    # Swap the rotation axis.
+    tomo.swap_rotation_axis()
+    tomo.initialize_volume()
+    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
+    loss2 = trainer.callback_metrics['train_total_loss_epoch'].item()
+    vol2 = tomo.volume.clone()
+    rot2 = tomo.rotation_params.clone()
+
+    # Choose the best loss and proceed with that.
+    if loss1 < loss2:
+        print("Loss 1 is better", loss1, loss2)
+        tomo.volume = nn.Parameter(vol1)
+        tomo.rotation_params = nn.Parameter(rot1)
+    else:
+        del vol1, rot1, loss1, vol2, rot2, loss2
+
+    # Visualize the latent space and the initial rotations
+    plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
 
     #Toggle the gradients of the quaternion parameters
     tomo.toggle_gradients_quaternion(True)
