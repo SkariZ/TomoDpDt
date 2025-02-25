@@ -716,7 +716,7 @@ if __name__ == "__main__":
 
     import simulate as sim
 
-    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='sum_projection', rotation_case='random_sinusoidal', samples=400)
+    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=400)
 
     #Downsample the projections 2x and downsample the object 2x
     scale = 1

@@ -58,7 +58,7 @@ def generate_3d_volume(size, num_layers, layer_densities):
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
 RI_RANGE = (1.333, 1.36)
-VOLUME_CASE = 2
+VOLUME_CASE = 1
 
 
 if VOLUME_CASE == 1:
@@ -85,10 +85,10 @@ if VOLUME_CASE == 1:
 elif VOLUME_CASE == 2:
     # Parameters
     size = 64  # Volume size (64x64x64)
-    num_layers = 6  # Number of layers inside the sphere
+    num_layers = 5  # Number of layers inside the sphere
 
     # Specify custom densities for each layer
-    layer_densities = [10, 1, 2, 3, 4, 10]  # You can modify this list to set custom values for each layer
+    layer_densities = [1, 2, 3, 4, 5]  # You can modify this list to set custom values for each layer
 
     # Generate the volume
     volume = generate_3d_volume(size, num_layers, layer_densities)
