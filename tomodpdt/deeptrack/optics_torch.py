@@ -1194,6 +1194,7 @@ class Fluorescence(Optics):
             )
         pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
 
+        
         z_index = 0
 
         # Loop through volume and convolve sample with pupil function
@@ -1699,7 +1700,7 @@ class Darkfield(Brightfield):
         """
 
         field = super().get(illuminated_volume, limits, fields, return_field=True, **kwargs)
-        field._value = torch.square(torch.abs(field._value-1))
+        field._value = torch.square(torch.abs(field._value-torch.mean(field._value)))
         return field
 
 

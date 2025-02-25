@@ -57,7 +57,7 @@ def generate_3d_volume(size, num_layers, layer_densities):
 
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
-RI_RANGE = (1.333, 1.36)
+RI_RANGE = (1.33, 1.35)
 VOLUME_CASE = 1
 
 

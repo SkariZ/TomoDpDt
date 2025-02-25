@@ -279,7 +279,7 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
-                        estimated_projection = estimated_projection.permute(2, 0, 1)
+                    estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 #Add channel dimension if not present
                 if len(estimated_projection.shape) == 2:
@@ -564,7 +564,7 @@ class Tomography(dl.Application):
                         # Check if the estimated projection is complex and take the imaginary part
                         if estimated_projection.dtype == torch.complex64:
                             estimated_projection = estimated_projection.imag
-                            estimated_projection = estimated_projection.permute(2, 0, 1)
+                        estimated_projection = estimated_projection.permute(2, 0, 1)
 
                     #Add channel dimension if not present
                     if len(estimated_projection.shape) == 2:
@@ -639,7 +639,7 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
-                        estimated_projection = estimated_projection.permute(2, 0, 1)
+                    estimated_projection = estimated_projection.permute(2, 0, 1)
 
                 #Add channel dimension if not present
                 if len(estimated_projection.shape) == 2:
@@ -716,84 +716,93 @@ if __name__ == "__main__":
 
     import simulate as sim
 
-    test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=400)
+    image_modality_list = ['sum_projection', 'brightfield', 'darkfield']
+    rotation_case_list = ['random_sinusoidal', '1ax']
 
-    #Downsample the projections 2x and downsample the object 2x
-    scale = 1
-    projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
-    try:
-        test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
-    except:
-        test_object = None
+    for image_modality in image_modality_list:
+        for rotation_case in rotation_case_list:
+            print(image_modality, rotation_case)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality='sum_projection', rotation_case='random_sinusoidal', samples=400)
 
-    # Assuming the projections are square and the volume is cubic
-    N = projections.shape[-1]
+            #Downsample the projections 2x and downsample the object 2x
+            scale = 1
+            projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
+            try:
+                test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
+            except:
+                test_object = None
 
-    # Create the tomography model
-    tomo = Tomography(
-        volume_size=(N, N, N),
-        rotation_optim_case='basis',
-        initial_volume='refraction',
-        imaging_model=imaging_model
-        )
+            # Assuming the projections are square and the volume is cubic
+            N = projections.shape[-1]
 
-    # Initialize the parameters
-    tomo.initialize_parameters(projections, normalize=True)
-    
-    # Train the model
-    N = len(tomo.frames)
-    idx = torch.arange(N)
+            # Create the tomography model
+            tomo = Tomography(
+                volume_size=(N, N, N),
+                rotation_optim_case='basis',
+                initial_volume='refraction',
+                imaging_model=imaging_model
+                )
 
-    start_time = time.time()
+            # Initialize the parameters
+            tomo.initialize_parameters(projections, normalize=True)
+            
+            # Train the model
+            N = len(tomo.frames)
+            idx = torch.arange(N)
 
-    # Toggle the gradients rotation params to off for initial phase
-    tomo.toggle_gradients_quaternion(False)
+            start_time = time.time()
 
-    # First axis test.
-    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
-    loss1 = trainer.callback_metrics['train_total_loss_epoch'].item()
-    vol1 = tomo.volume.clone()
-    rot1 = tomo.rotation_params.clone()    
+            # Toggle the gradients rotation params to off for initial phase
+            tomo.toggle_gradients_quaternion(False)
 
-    # Swap the rotation axis.
-    tomo.swap_rotation_axis()
-    tomo.initialize_volume()
-    tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
-    loss2 = trainer.callback_metrics['train_total_loss_epoch'].item()
-    vol2 = tomo.volume.clone()
-    rot2 = tomo.rotation_params.clone()
+            # First axis test.
+            trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
+            loss1 = trainer.callback_metrics['train_total_loss_epoch'].item()
+            vol1 = tomo.volume.clone()
+            rot1 = tomo.rotation_params.clone()    
 
-    # Choose the best loss and proceed with that.
-    if loss1 < loss2:
-        print("Loss 1 is better ie. choose optimized axis", loss1, loss2)
-        tomo.volume = nn.Parameter(vol1)
-        tomo.rotation_params = nn.Parameter(rot1)
-    else:
-        del vol1, rot1, loss1, vol2, rot2, loss2
+            # Swap the rotation axis.
+            tomo.swap_rotation_axis()
+            tomo.initialize_volume()
+            tomo.move_all_to_device("cuda")
+            trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
+            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
+            loss2 = trainer.callback_metrics['train_total_loss_epoch'].item()
+            vol2 = tomo.volume.clone()
+            rot2 = tomo.rotation_params.clone()
 
-    # Visualize the latent space and the initial rotations
-    plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
+            # Choose the best loss and proceed with that.
+            if loss1 < loss2:
+                print("Loss 1 is better ie. choose optimized axis", loss1, loss2)
+                tomo.volume = nn.Parameter(vol1)
+                tomo.rotation_params = nn.Parameter(rot1)
+            else:
+                del vol1, rot1, loss1, vol2, rot2, loss2
 
-    #Toggle the gradients of the quaternion parameters
-    tomo.toggle_gradients_quaternion(True)
-    tomo.move_all_to_device("cuda")
-    trainer = dl.Trainer(max_epochs=50, accelerator="auto", log_every_n_steps=10)
-    trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
+            # Visualize the latent space and the initial rotations
+            plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
 
-    print("Training time: ", (time.time() - start_time) / 60, " minutes")
+            #Toggle the gradients of the quaternion parameters
+            tomo.toggle_gradients_quaternion(True)
+            tomo.move_all_to_device("cuda")
+            trainer = dl.Trainer(max_epochs=100, accelerator="auto", log_every_n_steps=10)
+            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
 
-    # Plot the training history
-    try:
-        trainer.history.plot()
-    except:
-        print("No history to plot...")
+            print("Training time: ", (time.time() - start_time) / 60, " minutes")
 
+            # Plot the training history
+            try:
+                trainer.history.plot()
+            except:
+                print("No history to plot...")
 
-    # Visualize the final volume and rotations.
-    plotting.plots_optim(tomo, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
+            # Visualize the final volume and rotations.
+            plotting.plots_optim(tomo, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
+
+            # Save volume and rotations
+            torch.save(tomo.volume, f"../results/volume_{image_modality}_{rotation_case}.pt")
+            torch.save(tomo.rotation_params, f"../results/rotations_{image_modality}_{rotation_case}.pt")
 
     #Check if tomo.volume has gradients
     #print(tomo.volume.grad)
