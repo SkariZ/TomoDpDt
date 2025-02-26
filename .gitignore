@@ -11,3 +11,6 @@ __pycache__/
 # Lightninig logs
 logs/
 lightning_logs/
+
+#All files in results folder
+results/*
