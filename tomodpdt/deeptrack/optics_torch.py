@@ -943,12 +943,21 @@ class Optics(Feature):
         old_region = (limits - new_limits).int()
         limits = limits.int()
 
+        new_volume = new_volume.clone()  # Ensure new tensor (avoiding in-place ops)
+        mask = torch.zeros_like(new_volume, dtype=torch.bool)
+        mask[
+            old_region[0, 0]: old_region[0, 0] + limits[0, 1] - limits[0, 0],
+            old_region[1, 0]: old_region[1, 0] + limits[1, 1] - limits[1, 0],
+            old_region[2, 0]: old_region[2, 0] + limits[2, 1] - limits[2, 0]
+        ] = True  # ✅ Mark positions to update
 
-        new_volume[
-            old_region[0, 0] : old_region[0, 0] + limits[0, 1] - limits[0, 0],
-            old_region[1, 0] : old_region[1, 0] + limits[1, 1] - limits[1, 0],
-            old_region[2, 0] : old_region[2, 0] + limits[2, 1] - limits[2, 0],
-        ] = volume
+        new_volume = new_volume.masked_scatter(mask, volume)
+
+        #new_volume[
+        #    old_region[0, 0] : old_region[0, 0] + limits[0, 1] - limits[0, 0],
+        #    old_region[1, 0] : old_region[1, 0] + limits[1, 1] - limits[1, 0],
+        #    old_region[2, 0] : old_region[2, 0] + limits[2, 1] - limits[2, 0],
+        #] = volume
 
         return new_volume, new_limits
 
@@ -1461,10 +1470,10 @@ class Brightfield(Optics):
 
         z = z_limits[1]
         for i, z in zip(index_iterator, z_iterator):
-            light_in = light_in * pupil_step
-
-            if zero_plane[i]:
-                continue
+            #light_in = light_in * pupil_step
+            light_in = torch.where(zero_plane[i], light_in, light_in * pupil_step)
+            #if zero_plane[i]:
+            #    continue
             
             ri_slice = volume[:, :, i]
             light = torch.fft.ifft2(light_in)

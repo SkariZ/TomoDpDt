@@ -8,17 +8,14 @@ from typing import Optional, Sequence#, Callable, List
 
 # Importing the necessary modules
 import estimate_rotations_from_latent as erfl
-import imaging_modality_brightfield_torch as imb
 import vaemod as vm
 
 import deeptrack as dt
-#so = imb.setup_optics(nsize=96)
 from deeplay.external import Adam
 
 import numpy as np
 import time
-#data = np.load('../test_data/test_data_c.npz', allow_pickle=True)
-#QGT = torch.tensor(data["quaternions"], dtype=torch.float32) if "quaternions" in data else None
+import plotting
 
 class Tomography(dl.Application):
     def __init__(self,
@@ -138,7 +135,6 @@ class Tomography(dl.Application):
             raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'. as of now...")
         
         self.rotation_params = nn.Parameter(rotation_params.to(self._device))
-        #self.rotation_params = rotation_params.to(self._device)
 
         # Setting frames to the number of rotations
         self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
@@ -244,7 +240,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    def forward(self, idx):
+    def forward(self, idx, minibatch=16):
         """
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
@@ -256,41 +252,51 @@ class Tomography(dl.Application):
         #quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
 
         batch_size = quaternions.shape[0]
-        estimated_projections = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
+        estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
+
+        # Create minibatches for rotation
+        indexes = torch.arange(0, batch_size)
+        b_idx = [indexes[i:i + minibatch] for i in range(0, len(indexes), minibatch)]
+        volumes = torch.stack([volume for _ in range(minibatch)])
+
+        for b in b_idx:
+
+            #Rotate the volume(s)
+            rotated_volumes = self.apply_rotation_batch(volumes[:len(b)], quaternions[b])
 
         # Rotate the volume and estimate the projections
-        for i in range(batch_size):
-            rotated_volume = self.apply_rotation(volume, quaternions[i])
+        #for i in range(batch_size):
+        #    rotated_volume = self.apply_rotation(volume, quaternions[i])
                 
             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
-                estimated_projection = self.imaging_model(rotated_volume)
+                estimated_projections = self.imaging_model(rotated_volumes)
 
                 #Check if estimated_projections has a function _value
-                if hasattr(estimated_projection, '_value') and self.CH > 1:
-                    estimated_projection = torch.concatenate(
-                        (estimated_projection._value.real, estimated_projection._value.imag),
+                if hasattr(estimated_projections, '_value') and self.CH > 1:
+                    estimated_projections = torch.concatenate(
+                        (estimated_projections._value.real, estimated_projections._value.imag),
                         axis=-1)
-                    estimated_projection = estimated_projection.permute(2, 0, 1)
+                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
 
-                elif hasattr(estimated_projection, '_value') and self.CH == 1:
-                    estimated_projection = estimated_projection._value
+                elif hasattr(estimated_projections, '_value') and self.CH == 1:
+                    estimated_projections = estimated_projections._value
 
                     # Check if the estimated projection is complex and take the imaginary part
-                    if estimated_projection.dtype == torch.complex64:
-                        estimated_projection = estimated_projection.imag
-                    estimated_projection = estimated_projection.permute(2, 0, 1)
+                    if estimated_projections.dtype == torch.complex64:
+                        estimated_projections = estimated_projections.imag
+                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
 
                 #Add channel dimension if not present
-                if len(estimated_projection.shape) == 2:
-                    estimated_projection = estimated_projection.unsqueeze(0)
+                if len(estimated_projections.shape) == 3:
+                    estimated_projections = estimated_projections.unsqueeze(1)
 
-                estimated_projections[i] = estimated_projection
+                estimated_projections_batch[b] = estimated_projections
             
             else:
                 raise ValueError("Imaging model must be a nn.Module.")
 
-        return estimated_projections
+        return estimated_projections_batch
     
     def training_step(self, batch, batch_idx):
         idx = batch
@@ -520,74 +526,53 @@ class Tomography(dl.Application):
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
         return rotated_volume.squeeze()
 
-    def proposition_quaternions(self):
+    def quaternion_to_rotation_matrix_batch(self, q):
+        """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
+        q = q / q.norm(dim=1, keepdim=True)  # Normalize quaternions batchwise
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
+        R = torch.stack([
+            1 - 2*y**2 - 2*z**2,  2*x*y - 2*z*w,  2*x*z + 2*y*w,
+            2*x*y + 2*z*w,  1 - 2*x**2 - 2*z**2,  2*y*z - 2*x*w,
+            2*x*z - 2*y*w,  2*y*z + 2*x*w,  1 - 2*x**2 - 2*y**2
+        ], dim=1).reshape(-1, 3, 3)  # Shape: (B, 3, 3)
+
+        return R
+
+    def apply_rotation_batch(self, volumes, quaternions):
         """
-        Since normalizing the quaternions do not take sign into account, the quaternions can be flipped.
-        This function proposes the correct sign of the quaternions. I.e check if the projections are minimized 
-        by the current quaternions or if a sign flip is needed.
+        Rotate a batch of 3D volumes using batch quaternions.
 
+        Parameters:
+        - volumes (torch.Tensor): Shape (B, D, H, W) or (B, 1, D, H, W)
+        - quaternions (torch.Tensor): Shape (B, 4) (unit quaternions)
+
+        Returns:
+        - rotated_volumes (torch.Tensor): Shape (B, D, H, W)
         """
+        B, D, H, W = volumes.shape if volumes.dim() == 4 else volumes.shape[0:4]
+        if volumes.dim() == 4:
+            volumes = volumes.unsqueeze(1)  # Convert (B, D, H, W) → (B, 1, D, H, W)
 
-        # There will be all combinations of the three axes
-        signs = torch.tensor([
-            [1, 1, 1, 1], [1, 1, 1, -1], [1, 1, -1, 1], 
-            [1, 1, -1, -1], [1, -1, 1, 1], [1, -1, 1, -1], 
-            [1, -1, -1, 1], [1, -1, -1, -1]], device=self._device)
+        # Convert quaternions to rotation matrices
+        R = self.quaternion_to_rotation_matrix_batch(quaternions)  # Shape: (B, 3, 3)
 
-        # Get the current quaternions
-        quaternions = self.get_quaternions(self.rotation_params)
+        # Create base 3D grid
+        lin = torch.linspace(-1, 1, D, device=volumes.device)
+        x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
+        grid = torch.stack((x, y, z), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
 
-        Losses = torch.zeros(signs.shape[0], device=self._device)
-        for s, sign in enumerate(signs):
-            quaternions_prop = quaternions * sign
-            projections_tmp = torch.zeros(quaternions_prop.shape[0], self.CH, self.N, self.N, device=self._device)
+        # Rotate grid batchwise
+        rotated_grid = torch.bmm(grid.unsqueeze(0).expand(B, -1, -1), R.transpose(1, 2))  # (B, D*H*W, 3)
+        rotated_grid = rotated_grid.view(B, D, H, W, 3)  # Reshape back
 
-            for i in range(quaternions_prop.shape[0]):
+        # Ensure grid values are in range [-1, 1]
+        rotated_grid = rotated_grid.clamp(-1, 1)
 
-                rotated_volume = self.apply_rotation(self.volume, quaternions_prop[i])
-                estimated_projection = self.imaging_model(rotated_volume)
+        # Apply grid_sample in batch mode
+        rotated_volumes = F.grid_sample(volumes, rotated_grid, align_corners=True)
 
-
-                if isinstance(self.imaging_model, nn.Module):
-                    estimated_projection = self.imaging_model(rotated_volume)
-
-                    #Check if estimated_projections has a function _value
-                    if hasattr(estimated_projection, '_value') and self.CH > 1:
-                        estimated_projection = torch.concatenate(
-                            (estimated_projection._value.real, estimated_projection._value.imag),
-                            axis=-1)
-                        estimated_projection = estimated_projection.permute(2, 0, 1)
-
-                    elif hasattr(estimated_projection, '_value') and self.CH == 1:
-                        estimated_projection = estimated_projection._value
-
-                        # Check if the estimated projection is complex and take the imaginary part
-                        if estimated_projection.dtype == torch.complex64:
-                            estimated_projection = estimated_projection.imag
-                        estimated_projection = estimated_projection.permute(2, 0, 1)
-
-                    #Add channel dimension if not present
-                    if len(estimated_projection.shape) == 2:
-                        estimated_projection = estimated_projection.unsqueeze(0)
-
-                    projections_tmp[i] = estimated_projection
-                
-                else:
-                    raise ValueError("Imaging model must be a nn.Module.")
-                
-            # Normalize the projections
-            if self.normalize:
-                projections_tmp = self.per_channel_normalization(projections_tmp)
-
-            # Compute the loss
-            loss = F.l1_loss(projections_tmp, self.frames)
-            Losses[s] = loss
-
-        # Get the index of the minimum loss
-        idx = torch.argmin(Losses)
-
-        # Return the quaternions with the lowest loss
-        return quaternions * signs[idx]
+        return rotated_volumes.squeeze(1)  # Remove channel dimension if necessary
 
     def full_forward_final(self):
         """
@@ -708,16 +693,10 @@ class Tomography(dl.Application):
 
 # Testing the code
 if __name__ == "__main__":
-    import numpy as np
-    import plotting
-
-    from importlib import reload
-    reload(plotting)
-
     import simulate as sim
 
-    image_modality_list = ['sum_projection', 'brightfield', 'darkfield']
-    rotation_case_list = ['1ax', 'random_sinusoidal']
+    image_modality_list = ['brightfield']
+    rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:
         for rotation_case in rotation_case_list:
@@ -806,3 +785,19 @@ if __name__ == "__main__":
 
     #Check if tomo.volume has gradients
     #print(tomo.volume.grad)
+    quaternions = tomo.get_quaternions_final()
+
+    volumes = torch.stack([tomo.apply_rotation(tomo.volume, q) for q in quaternions])
+
+   
+
+    # take time
+    k = 32
+    start = time.time()
+    x = tomo.apply_rotation_batch(volumes[:k] , quaternions[:k])
+    print("Time taken: ", time.time() - start)
+
+    start = time.time()
+    for i in range(k):
+        tomo.apply_rotation(tomo.volume, quaternions[i])
+        

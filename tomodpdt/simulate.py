@@ -57,7 +57,7 @@ def generate_3d_volume(size, num_layers, layer_densities):
 
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
-RI_RANGE = (1.33, 1.35)
+RI_RANGE = (1.33, 1.42)
 VOLUME_CASE = 1
 
 
@@ -118,18 +118,22 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
     # Create an imaging modality
     if image_modality == 'sum_projection':
         imaging_model = IMT.Dummy3d2d(dim=-1)
+
     elif image_modality.lower() == 'brightfield':
-        optics = IMT.setup_optics(SIZE, 'Brightfield')
+        optics = IMT.setup_optics(SIZE, microscopy_regime='Brightfield')
         imaging_model = IMT.imaging_model(optics)
         ch = 2
+
     elif image_modality.lower() == 'darkfield':
-        optics = IMT.setup_optics(SIZE, 'Darkfield')
+        optics = IMT.setup_optics(SIZE, microscopy_regime='Darkfield')
         imaging_model = IMT.imaging_model(optics)
+
     elif image_modality.lower() == 'iscat':
-        optics = IMT.setup_optics(SIZE, 'Iscat')
+        optics = IMT.setup_optics(SIZE, microscopy_regime='Iscat')
         imaging_model = IMT.imaging_model(optics)
+
     elif image_modality.lower() == 'fluorescence':
-        optics = IMT.setup_optics(SIZE, 'Fluorescence')
+        optics = IMT.setup_optics(SIZE, microscopy_regime='Fluorescence')
         imaging_model = IMT.imaging_model(optics)
     else:
         raise ValueError('Unknown imaging modality')
@@ -162,14 +166,14 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
             projections[i, 1] = image.imag.cpu().squeeze()
 
         if image_modality.lower() in ['darkfield', 'iscat', 'fluorescence']:
-            projections[i, 0] = image.cpu().squeeze()
+            projections[i, 0] = image.cpu().squeeze().real
     
     return object, quaternions, projections, imaging_model
 
 
 if __name__=='__main__':
 
-    object, quaternions, projections = create_data(image_modality='fluorescence', rotation_case='random_sinusoidal')
+    object, quaternions, projections, imaging_model = create_data(image_modality='brightfield', rotation_case='random_sinusoidal', samples=25)
 
     # Plot the object
     plt.imshow(object.cpu().squeeze().numpy().sum(2))

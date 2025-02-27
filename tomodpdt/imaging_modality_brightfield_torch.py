@@ -86,7 +86,7 @@ class imaging_model(nn.Module):
         self.fields = self.fields.to(object.device)
 
         return self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
-
+    
 if __name__ == "__main__":
 
     nsize = 96
