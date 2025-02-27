@@ -159,7 +159,7 @@ def create_data(volume=VOL, image_modality='sum_projection', samples=400, rotati
         image = imaging_model(volume_new)
 
         if image_modality == 'sum_projection':
-            projections[i, 0] = image.cpu()
+            projections[i, 0] = image.cpu().squeeze()
 
         if image_modality.lower() in ['brightfield']:
             projections[i, 0] = image.real.cpu().squeeze()

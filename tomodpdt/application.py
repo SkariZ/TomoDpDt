@@ -240,7 +240,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    def forward(self, idx, minibatch=16):
+    def forward(self, idx, minibatch=1):
         """
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
@@ -257,39 +257,28 @@ class Tomography(dl.Application):
         # Create minibatches for rotation
         indexes = torch.arange(0, batch_size)
         b_idx = [indexes[i:i + minibatch] for i in range(0, len(indexes), minibatch)]
-        volumes = torch.stack([volume for _ in range(minibatch)])
+        volumes = torch.stack([volume.clone() for _ in range(minibatch)])
 
         for b in b_idx:
-
             #Rotate the volume(s)
             rotated_volumes = self.apply_rotation_batch(volumes[:len(b)], quaternions[b])
-
-        # Rotate the volume and estimate the projections
-        #for i in range(batch_size):
-        #    rotated_volume = self.apply_rotation(volume, quaternions[i])
-                
+ 
             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projections = self.imaging_model(rotated_volumes)
 
-                #Check if estimated_projections has a function _value
-                if hasattr(estimated_projections, '_value') and self.CH > 1:
+                # if two channels are present, concatenate them - for complex valued projections
+                if self.CH > 1:
                     estimated_projections = torch.concatenate(
-                        (estimated_projections._value.real, estimated_projections._value.imag),
+                        (estimated_projections.real, estimated_projections.imag),
                         axis=-1)
                     estimated_projections = estimated_projections.permute(0, 3, 1, 2)
 
-                elif hasattr(estimated_projections, '_value') and self.CH == 1:
-                    estimated_projections = estimated_projections._value
-
+                elif self.CH == 1:
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projections.dtype == torch.complex64:
                         estimated_projections = estimated_projections.imag
                     estimated_projections = estimated_projections.permute(0, 3, 1, 2)
-
-                #Add channel dimension if not present
-                if len(estimated_projections.shape) == 3:
-                    estimated_projections = estimated_projections.unsqueeze(1)
 
                 estimated_projections_batch[b] = estimated_projections
             
@@ -612,26 +601,17 @@ class Tomography(dl.Application):
                 estimated_projection = self.imaging_model(rotated_volume)
 
                 # Check if estimated_projections has a function _value
-                if hasattr(estimated_projection, '_value') and self.CH > 1:
+                if self.CH > 1:
                     estimated_projection = torch.concatenate(
                         (estimated_projection._value.real, estimated_projection._value.imag)
                         , axis=-1)
                     estimated_projection = estimated_projection.permute(2, 0, 1)
 
-                elif hasattr(estimated_projection, '_value') and self.CH == 1:
-                    estimated_projection = estimated_projection._value
-
+                elif self.CH == 1:
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projection.dtype == torch.complex64:
                         estimated_projection = estimated_projection.imag
                     estimated_projection = estimated_projection.permute(2, 0, 1)
-
-                #Add channel dimension if not present
-                if len(estimated_projection.shape) == 2:
-                    estimated_projection = estimated_projection.unsqueeze(0)
-
-                estimated_projections[i] = estimated_projection
-            
             else:
                 raise ValueError("Imaging model must be a nn.Module.")
 
@@ -695,7 +675,7 @@ class Tomography(dl.Application):
 if __name__ == "__main__":
     import simulate as sim
 
-    image_modality_list = ['brightfield']
+    image_modality_list = ['iscat']
     rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:

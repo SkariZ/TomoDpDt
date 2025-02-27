@@ -136,9 +136,9 @@ class imaging_model(nn.Module):
             return self.imaging_step(object)
         else:
             
-            imaging_vmap = torch.vmap(lambda obj: self.imaging_step(obj)._value)
+            imaging_vmap = torch.vmap(lambda obj: self.imaging_step(obj))
             # Do a batch processing with multiple objects
-            return dt.Image(imaging_vmap(object))
+            return imaging_vmap(object)
 
             #return dt.Image(torch.stack([self.imaging_step(sample)._value for sample in object]))
             
@@ -185,16 +185,17 @@ class imaging_model(nn.Module):
         if self.padding_xy > 0:
             image = image[self.padding_xy:-self.padding_xy, self.padding_xy:-self.padding_xy]
             
-        return image
+        return image._value
 
 class Dummy3d2d(nn.Module):
     def __init__(self, dim=-1):
         self.dim = dim
+        self.microscopy_regime = 'sum_projection'
         super(Dummy3d2d, self).__init__()
 
     def forward(self, x):
         # Return projection of the 3D volume
-        return x.sum(dim=self.dim)
+        return x.sum(dim=self.dim, keepdim=True)
 
 def generate_3d_volume(size, num_layers, layer_densities):
     # Ensure that the number of densities matches the number of layers
