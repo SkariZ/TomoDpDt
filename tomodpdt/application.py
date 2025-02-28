@@ -680,7 +680,7 @@ class Tomography(dl.Application):
 if __name__ == "__main__":
     import simulate as sim
 
-    image_modality_list = ['iscat']
+    image_modality_list = ['iscat', 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:

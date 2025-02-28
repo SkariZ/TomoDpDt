@@ -136,7 +136,7 @@ class imaging_model(nn.Module):
             return self.imaging_step(object)
         else:
             
-            imaging_vmap = torch.vmap(lambda obj: self.imaging_step(obj))
+            imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
             # Do a batch processing with multiple objects
             return imaging_vmap(object)
 
@@ -271,7 +271,7 @@ if __name__ == "__main__":
     
     object = torch.tensor(object).to('cuda')
 
-    object_16 = torch.stack([object for _ in range(32)])
+    object_16 = torch.stack([object for _ in range(16)])
 
     import time
 
@@ -280,7 +280,7 @@ if __name__ == "__main__":
     print('Time taken:', time.time() - start)
 
     start = time.time()
-    for i in range(32):
+    for i in range(16):
         image = im_model(object)
     print('Time taken:', time.time() - start)
 
