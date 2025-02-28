@@ -950,9 +950,20 @@ class Optics(Feature):
             old_region[1, 0]: old_region[1, 0] + limits[1, 1] - limits[1, 0],
             old_region[2, 0]: old_region[2, 0] + limits[2, 1] - limits[2, 0]
         ] = True  # ✅ Mark positions to update
+        
+        pad_x = new_volume.shape[0] - volume.shape[0]
+        pad_y = new_volume.shape[1] - volume.shape[1]
+        pad_z = new_volume.shape[2] - volume.shape[2]
+        pad_x1, pad_x2 = pad_x // 2, pad_x - (pad_x // 2)
+        pad_y1, pad_y2 = pad_y // 2, pad_y - (pad_y // 2)
+        pad_z1, pad_z2 = pad_z // 2, pad_z - (pad_z // 2)
 
-        new_volume = new_volume.masked_scatter(mask, volume)
+        padded_volume = torch.nn.functional.pad(
+            volume, (pad_z1, pad_z2, pad_y1, pad_y2, pad_x1, pad_x2), mode='constant', value=0
+)
 
+        #new_volume = new_volume.masked_scatter(mask, volume)
+        new_volume = torch.where(mask, padded_volume, new_volume)
         #new_volume[
         #    old_region[0, 0] : old_region[0, 0] + limits[0, 1] - limits[0, 0],
         #    old_region[1, 0] : old_region[1, 0] + limits[1, 1] - limits[1, 0],

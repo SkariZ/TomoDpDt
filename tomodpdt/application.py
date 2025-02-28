@@ -72,6 +72,11 @@ class Tomography(dl.Application):
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
         self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self._device)
 
+        # Create base 3D grid
+        lin = torch.linspace(-1, 1, self.N, device=self._device)
+        x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
+        self.grid_batch = torch.stack((x, y, z), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
+
         # Placeholder
         self.normalize = False
 
@@ -547,12 +552,10 @@ class Tomography(dl.Application):
         R = self.quaternion_to_rotation_matrix_batch(quaternions)  # Shape: (B, 3, 3)
 
         # Create base 3D grid
-        lin = torch.linspace(-1, 1, D, device=volumes.device)
-        x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
-        grid = torch.stack((x, y, z), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
+        grid = self.grid_batch.unsqueeze(0).expand(B, -1, -1)  # (B, D*H*W, 3)
 
         # Rotate grid batchwise
-        rotated_grid = torch.bmm(grid.unsqueeze(0).expand(B, -1, -1), R.transpose(1, 2))  # (B, D*H*W, 3)
+        rotated_grid = torch.bmm(grid, R.transpose(1, 2))  # (B, D*H*W, 3)
         rotated_grid = rotated_grid.view(B, D, H, W, 3)  # Reshape back
 
         # Ensure grid values are in range [-1, 1]
@@ -584,6 +587,7 @@ class Tomography(dl.Application):
 
         #Set the grid to the device as well...
         self.grid = self.grid.to(self._device)
+        self.grid_batch = self.grid_batch.to(self._device)
 
         # Set the global min/max values to the device
         self.global_min = self.global_min.to(self._device)
@@ -647,6 +651,7 @@ class Tomography(dl.Application):
         if self.rotation_optim_case == 'basis':
             self.basis = self.basis.to(device)
         self.grid = self.grid.to(device)
+        self.grid_batch = self.grid_batch.to(device)
         self.global_min = self.global_min.to(device)
         self.global_max = self.global_max.to(device)
     
