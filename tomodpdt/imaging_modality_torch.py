@@ -128,19 +128,20 @@ class imaging_model(nn.Module):
         self.return_field = self.filtered_properties['return_field'] if 'return_field' in self.filtered_properties else False
 
 
-    def forward(self, object):
+    def forward(self, object, forward_case='vmap'):
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
         if object.dim() == 3:
             return self.imaging_step(object)
-        else:
-            
+        
+        if forward_case == 'vmap':
             imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
             # Do a batch processing with multiple objects
             return imaging_vmap(object)
-
-            #return dt.Image(torch.stack([self.imaging_step(sample)._value for sample in object]))
+        
+        elif forward_case == 'loop':
+            return torch.stack([self.imaging_step(sample) for sample in object])
             
     def imaging_step(self, object):
         """
@@ -249,10 +250,12 @@ if __name__ == "__main__":
 
     # Generate the volume
     volume = generate_3d_volume(nsize, num_layers, layer_densities)
+    volume2 = generate_3d_volume(nsize, 1, [1])
 
     # Normalize the volume for visualization
     object = (volume - volume.min()) / (volume.max() - volume.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
-    
+    object2 = (volume2 - volume2.min()) / (volume2.max() - volume2.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+
     # Show 3 projections of the volume
     plt.figure(figsize=(15, 5))
     plt.subplot(131)
@@ -270,14 +273,22 @@ if __name__ == "__main__":
     plt.show()
     
     object = torch.tensor(object).to('cuda')
+    object2 = torch.tensor(object2).to('cuda')
 
-    object_16 = torch.stack([object for _ in range(16)])
+    object_16 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
 
     import time
 
+    #Track gradient
+    object_16.requires_grad = True
+
     start = time.time()
-    image = im_model(object_16)
+    image16 = im_model(object_16)
     print('Time taken:', time.time() - start)
+
+    #Check gradient
+    image16.sum().backward()
+    print('Gradient:', object_16.grad)
 
     start = time.time()
     for i in range(16):

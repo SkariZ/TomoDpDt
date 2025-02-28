@@ -10,10 +10,8 @@ from typing import Optional, Sequence#, Callable, List
 import estimate_rotations_from_latent as erfl
 import vaemod as vm
 
-import deeptrack as dt
 from deeplay.external import Adam
 
-import numpy as np
 import time
 import plotting
 
@@ -245,7 +243,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    def forward(self, idx, minibatch=1):
+    def forward(self, idx, minibatch=32):
         """
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
@@ -258,6 +256,10 @@ class Tomography(dl.Application):
 
         batch_size = quaternions.shape[0]
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
+        
+        # Check if the batch size is less than the minibatch size
+        if batch_size < minibatch:
+            minibatch = batch_size
 
         # Create minibatches for rotation
         indexes = torch.arange(0, batch_size)
@@ -607,7 +609,7 @@ class Tomography(dl.Application):
                 # Check if estimated_projections has a function _value
                 if self.CH > 1:
                     estimated_projection = torch.concatenate(
-                        (estimated_projection._value.real, estimated_projection._value.imag)
+                        (estimated_projection.real, estimated_projection.imag)
                         , axis=-1)
                     estimated_projection = estimated_projection.permute(2, 0, 1)
 
@@ -680,13 +682,13 @@ class Tomography(dl.Application):
 if __name__ == "__main__":
     import simulate as sim
 
-    image_modality_list = ['iscat', 'darkfield', 'brightfield', 'sum_projection']
+    image_modality_list = ['brightfield', 'sum_projection', 'iscat', 'darkfield',]
     rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:
         for rotation_case in rotation_case_list:
             print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=400)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=100)
 
             #Downsample the projections 2x and downsample the object 2x
             scale = 1
@@ -777,7 +779,7 @@ if __name__ == "__main__":
    
 
     # take time
-    k = 32
+    k = 64
     start = time.time()
     x = tomo.apply_rotation_batch(volumes[:k] , quaternions[:k])
     print("Time taken: ", time.time() - start)
@@ -785,4 +787,4 @@ if __name__ == "__main__":
     start = time.time()
     for i in range(k):
         tomo.apply_rotation(tomo.volume, quaternions[i])
-        
+
