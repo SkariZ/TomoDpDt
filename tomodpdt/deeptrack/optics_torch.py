@@ -1203,22 +1203,21 @@ class Fluorescence(Optics):
             ).to(padded_volume.device)
 
         zero_plane = torch.all(padded_volume == 0, axis=(0, 1), keepdims=False)
-        z_values = z_iterator[~zero_plane]
-
+        z_values = torch.masked_select(z_iterator, ~zero_plane)
+        print(~zero_plane)
         volume = pad_image_to_fft(padded_volume, axes=(0, 1))
-        
+
         #voxel_size = get_active_voxel_size()
 
         pupils = self._pupil(
             volume.shape[:2], defocus=z_values, include_aberration=False, **kwargs
             )
         pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
-
         
         z_index = 0
 
         # Loop through volume and convolve sample with pupil function
-        for i, z in zip(index_iterator, z_iterator):
+        for i in index_iterator:
 
             if zero_plane[i]:
                 continue
@@ -1437,11 +1436,11 @@ class Brightfield(Optics):
         #    )
 
         index_iterator = range(padded_volume.shape[2])
-        z_iterator = torch.linspace(
-            z_limits[0],
-            z_limits[1],
-            padded_volume.shape[2],
-            )
+        #z_iterator = torch.linspace(
+        #    z_limits[0],
+        #    z_limits[1],
+        #    padded_volume.shape[2],
+        #    ).to(padded_volume.device)
 
         zero_plane = torch.all(padded_volume == 0, axis=(0, 1), keepdims=False)
         # z_values = z_iterator[~zero_plane]
@@ -1480,7 +1479,7 @@ class Brightfield(Optics):
         K = 2 * torch.pi / kwargs["wavelength"]*kwargs["refractive_index_medium"]
 
         z = z_limits[1]
-        for i, z in zip(index_iterator, z_iterator):
+        for i in index_iterator:
             #light_in = light_in * pupil_step
             light_in = torch.where(zero_plane[i], light_in, light_in * pupil_step)
             #if zero_plane[i]:

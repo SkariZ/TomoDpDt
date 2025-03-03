@@ -278,15 +278,15 @@ if __name__ == "__main__":
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')
 
-    object_16 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
+    object_8 = torch.stack([object for _ in range(4)]+[object2 for _ in range(4)])
 
     import time
 
     #Track gradient
-    object_16.requires_grad = True
+    object_8.requires_grad = True
 
     start = time.time()
-    image16 = im_model(object_16)
+    image16 = im_model(object_8)
     print('Time taken:', time.time() - start)
 
     #Check gradient
@@ -294,7 +294,7 @@ if __name__ == "__main__":
     #print('Gradient:', object_16.grad)
 
     start = time.time()
-    for i in range(16):
+    for i in range(8):
         image = im_model(object)
     print('Time taken:', time.time() - start)
 
