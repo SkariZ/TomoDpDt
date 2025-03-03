@@ -119,7 +119,6 @@ def process_latent_space(
     coeffs = initialize_basis_functions(basis, quaternions)
 
     # Return processed data as dictionary and torch tensors on the same device
-
     return {
         "quaternions": quaternions.to(device),
         "coeffs": coeffs.to(device),
@@ -167,7 +166,11 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prom
     distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
 
     for dist in range(*distance_range):
-        peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
+        try:
+            peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
+        except:
+            peaks = []
+            
         if min_peaks < len(peaks) < max_peaks:
             break
 
