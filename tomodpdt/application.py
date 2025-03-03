@@ -366,11 +366,11 @@ class Tomography(dl.Application):
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
 
-        # Compute the strictly over 1.33 loss
+        # Compute the strictly over  loss
         if self.initial_volume == 'refraction':
-            so_loss = self.strictly_over_133_loss(self.volume)
+            so_loss = self.strictly_over_loss(self.volume)
         else:
-            so_loss = torch.tensor(0.0, device=self._device)
+            so_loss = self.strictly_over_loss(self.volume, value=0)
 
         # Scale the losses
         proj_loss *= 10
@@ -382,11 +382,11 @@ class Tomography(dl.Application):
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
-    def strictly_over_133_loss(self, volume):
+    def strictly_over_loss(self, volume, value=1.33):
         """
         Computes a loss that penalizes values strictly below 1.33.
         """
-        loss = torch.sum(torch.relu(1.33 - volume))  # Penalize values below 1.33
+        loss = torch.sum(torch.relu(value - volume))  # Penalize values below 
         return loss / volume.numel()  # Normalize by total elements
 
     def total_variation_regularization(self, delta_n):
