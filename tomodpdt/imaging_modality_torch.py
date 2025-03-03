@@ -175,6 +175,10 @@ class imaging_model(nn.Module):
                 image = self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
 
             elif self.microscopy_regime == 'fluorescence':
+                object[object < 1e-5] = 0
+                if object.sum() == 0:
+                    object[32, 32, 32] = 1e-5
+                    
                 image = self.optics.get(object, self.limits, **self.filtered_properties)
 
             else:

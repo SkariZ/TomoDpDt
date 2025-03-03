@@ -1204,7 +1204,7 @@ class Fluorescence(Optics):
 
         zero_plane = torch.all(padded_volume == 0, axis=(0, 1), keepdims=False)
         z_values = torch.masked_select(z_iterator, ~zero_plane)
-        print(~zero_plane)
+        
         volume = pad_image_to_fft(padded_volume, axes=(0, 1))
 
         #voxel_size = get_active_voxel_size()

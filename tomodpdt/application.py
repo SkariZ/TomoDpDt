@@ -688,7 +688,7 @@ if __name__ == "__main__":
     for image_modality in image_modality_list:
         for rotation_case in rotation_case_list:
             print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=200)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=100)
 
             # Downsample the projections 2x and downsample the object 2x
             scale = 1
@@ -705,7 +705,7 @@ if __name__ == "__main__":
             tomo = Tomography(
                 volume_size=(N, N, N),
                 rotation_optim_case='basis',
-                initial_volume='refraction',
+                initial_volume='zeros',
                 imaging_model=imaging_model
                 )
 
