@@ -29,7 +29,7 @@ DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the dev
 SIZE = 64  # Size of the 3D object
 
 
-def create_data(volume_case='gaussian', image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
+def create_data(volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
 
     image_modality = image_modality.lower()
 
@@ -120,7 +120,7 @@ def create_data(volume_case='gaussian', image_modality='sum_projection', samples
 if __name__=='__main__':
 
     object, quaternions, projections, imaging_model = create_data(
-        image_modality='fluorescence', 
+        image_modality='darkfield', 
         rotation_case='random_sinusoidal', 
         samples=10
         )

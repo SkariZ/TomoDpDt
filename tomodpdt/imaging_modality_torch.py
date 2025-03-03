@@ -129,20 +129,21 @@ class imaging_model(nn.Module):
 
         #
         self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
+        self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
-    def forward(self, object, forward_case='loop'):
+    def forward(self, object):
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
         if object.dim() == 3:
             return self.imaging_step(object)
-        
-        if forward_case == 'vmap':
+
+        if self.forward_case == 'vmap':
             imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
             # Do a batch processing with multiple objects
             return imaging_vmap(object)
         
-        elif forward_case == 'loop':
+        elif self.forward_case == 'loop':
             return torch.stack([self.imaging_step(sample) for sample in object])
             
     def imaging_step(self, object):
@@ -175,9 +176,9 @@ class imaging_model(nn.Module):
                 image = self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
 
             elif self.microscopy_regime == 'fluorescence':
-                object[object < 1e-5] = 0
+                object[object < 1e-7] = 0
                 if object.sum() == 0:
-                    object[32, 32, 32] = 1e-5
+                    object[32, 32, 32] = 1e-7
                     
                 image = self.optics.get(object, self.limits, **self.filtered_properties)
 
@@ -189,6 +190,7 @@ class imaging_model(nn.Module):
             
         return image._value
 
+
 class Dummy3d2d(nn.Module):
     def __init__(self, dim=-1):
         self.dim = dim
@@ -198,6 +200,7 @@ class Dummy3d2d(nn.Module):
     def forward(self, x):
         # Return projection of the 3D volume
         return x.sum(dim=self.dim, keepdim=True)
+
 
 def generate_3d_volume(size, num_layers, layer_densities):
     # Ensure that the number of densities matches the number of layers
