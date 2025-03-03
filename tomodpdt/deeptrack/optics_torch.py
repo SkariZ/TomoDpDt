@@ -1105,7 +1105,7 @@ class Fluorescence(Optics):
 
     def get(
         self:  'Fluorescence', 
-        illuminated_volume: ArrayLike[complex], 
+        illuminated_volume: ArrayLike[torch.complex], 
         limits: ArrayLike[int], 
         **kwargs: Dict[str, Any]
     ) -> Image:

@@ -682,13 +682,13 @@ class Tomography(dl.Application):
 if __name__ == "__main__":
     import simulate as sim
 
-    image_modality_list = ['darkfield', 'brightfield', 'sum_projection', 'iscat']
+    image_modality_list = ['fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:
         for rotation_case in rotation_case_list:
             print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=400)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=200)
 
             # Downsample the projections 2x and downsample the object 2x
             scale = 1

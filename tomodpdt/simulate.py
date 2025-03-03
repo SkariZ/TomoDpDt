@@ -31,6 +31,8 @@ SIZE = 64  # Size of the 3D object
 
 def create_data(volume_case='gaussian', image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
 
+    image_modality = image_modality.lower()
+
     if image_modality == 'fluorescence':
         volume_case = 'fluorescence'
 
@@ -118,7 +120,7 @@ def create_data(volume_case='gaussian', image_modality='sum_projection', samples
 if __name__=='__main__':
 
     object, quaternions, projections, imaging_model = create_data(
-        image_modality='darkfield', 
+        image_modality='fluorescence', 
         rotation_case='random_sinusoidal', 
         samples=10
         )

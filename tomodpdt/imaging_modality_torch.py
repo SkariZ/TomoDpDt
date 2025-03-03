@@ -127,8 +127,10 @@ class imaging_model(nn.Module):
         self.output_region = self.filtered_properties['output_region']
         self.return_field = self.filtered_properties['return_field'] if 'return_field' in self.filtered_properties else False
 
+        #
+        self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
 
-    def forward(self, object, forward_case='vmap'):
+    def forward(self, object, forward_case='loop'):
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
@@ -165,19 +167,14 @@ class imaging_model(nn.Module):
                 )
         ):
 
+            if self.padding_xy > 0:
+                object = torch.nn.functional.pad(
+                    object.permute(2, 1, 0), (self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy, 0, 0), mode='constant', value=self.padding_value
+                    ).permute(2, 1, 0)
             if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat':
-                if self.padding_xy > 0:
-                    object = torch.nn.functional.pad(
-                        object.permute(2, 1, 0), (self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy, 0, 0), mode='constant', value=1.33
-                        ).permute(2, 1, 0)
                 image = self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
 
             elif self.microscopy_regime == 'fluorescence':
-                
-                if self.padding_xy > 0:
-                    object = torch.nn.functional.pad(
-                        object.permute(2, 1, 0), (self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy, 0, 0), mode='constant', value=0
-                        ).permute(2, 1, 0)
                 image = self.optics.get(object, self.limits, **self.filtered_properties)
 
             else:
@@ -239,7 +236,7 @@ def generate_3d_volume(size, num_layers, layer_densities):
 if __name__ == "__main__":
 
     nsize = 64
-    optics_setup = setup_optics(nsize, padding_xy=64, microscopy_regime='darkfield')
+    optics_setup = setup_optics(nsize, padding_xy=64, microscopy_regime='fluorescence')
     im_model = imaging_model(optics_setup)
 
     RI_RANGE = (1.33, 1.45)
@@ -275,6 +272,12 @@ if __name__ == "__main__":
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')
 
+    import volumes as V
+    object = V.VOL_FLUO
+    object2 = V.VOL_FLUO
+    object = torch.tensor(object).to('cuda')
+    object2 = torch.tensor(object2).to('cuda')
+
     object_16 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
 
     import time
@@ -287,8 +290,8 @@ if __name__ == "__main__":
     print('Time taken:', time.time() - start)
 
     #Check gradient
-    image16.sum().backward()
-    print('Gradient:', object_16.grad)
+    image16.real.sum().backward()
+    #print('Gradient:', object_16.grad)
 
     start = time.time()
     for i in range(16):
