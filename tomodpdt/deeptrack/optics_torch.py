@@ -1202,7 +1202,7 @@ class Fluorescence(Optics):
             padded_volume.shape[2],
             ).to(padded_volume.device)
 
-        zero_plane = torch.all(padded_volume < 1e-7, axis=(0, 1), keepdims=False)
+        zero_plane = torch.all(padded_volume < 1e-8, axis=(0, 1), keepdims=False)
         z_values = torch.masked_select(z_iterator, ~zero_plane)
         
         volume = pad_image_to_fft(padded_volume, axes=(0, 1))
