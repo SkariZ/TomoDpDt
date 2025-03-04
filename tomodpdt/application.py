@@ -260,6 +260,9 @@ class Tomography(dl.Application):
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
 
         # Create minibatches for rotation
+        if batch_size < minibatch:
+            minibatch = batch_size
+
         indexes = torch.arange(0, batch_size)
         b_idx = [indexes[i:i + minibatch] for i in range(0, len(indexes), minibatch)]
         volumes = torch.stack([volume.clone() for _ in range(minibatch)])
@@ -681,14 +684,23 @@ class Tomography(dl.Application):
 # Testing the code
 if __name__ == "__main__":
     import simulate as sim
+    import os
 
-    image_modality_list = ['fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    image_modality_list = ['sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal']
+    save_folder_root = '../results'
+    if not os.path.exists(save_folder_root):
+        os.makedirs(save_folder_root)
 
     for image_modality in image_modality_list:
         for rotation_case in rotation_case_list:
+
+            save_folder = f"{save_folder_root}/{image_modality}_{rotation_case}/"
+            if not os.path.exists(save_folder):
+                os.makedirs(save_folder)
+
             print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=400)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=100)
 
             # Downsample the projections 2x and downsample the object 2x
             scale = 1
@@ -712,9 +724,6 @@ if __name__ == "__main__":
             # Initialize the parameters
             tomo.initialize_parameters(projections, normalize=True)
             
-            # Visualize the latent space and the initial rotations
-            plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
-
             # Train the model
             N = len(tomo.frames)
             idx = torch.arange(N)
@@ -750,7 +759,7 @@ if __name__ == "__main__":
                 del vol1, rot1, loss1, vol2, rot2, loss2
 
             # Visualize the latent space and the initial rotations
-            plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
+            plotting.plots_initial(tomo, save_folder=save_folder, gt=q_gt.to('cpu'))
 
             #Toggle the gradients of the quaternion parameters
             tomo.toggle_gradients_quaternion(True)
@@ -767,15 +776,15 @@ if __name__ == "__main__":
                 print("No history to plot...")
 
             # Visualize the final volume and rotations.
-            plotting.plots_optim(tomo, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
-
+            plotting.plots_optim(tomo, save_folder=save_folder, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
+            
             # Save volume and rotations
-            torch.save(tomo.volume, f"../results/volume_{image_modality}_{rotation_case}.pt")
-            torch.save(tomo.rotation_params, f"../results/rotations_{image_modality}_{rotation_case}.pt")
+            torch.save(tomo.volume, f"{save_folder}volume_{image_modality}_{rotation_case}.pt")
+            torch.save(tomo.rotation_params, f"{save_folder}/rotations_{image_modality}_{rotation_case}.pt")
 
             # print gradients
-            print(tomo.volume.grad)
-            print(tomo.rotation_params.grad)
+            #print(tomo.volume.grad)
+            #print(tomo.rotation_params.grad)
 
     #Check if tomo.volume has gradients
     #print(tomo.volume.grad)

@@ -5,7 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
 
-def plots_initial(tomo, gt=None):
+def plots_initial(tomo, save_folder=None, gt=None):
     
     z = tomo.latent.detach().cpu().numpy()
 
@@ -14,6 +14,8 @@ def plots_initial(tomo, gt=None):
     plt.scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
     plt.scatter(z[0, 0], z[0, 1], c='r')  # start_point
     plt.colorbar()
+    if save_folder is not None:
+        plt.savefig(save_folder + 'latent_space.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # 3D plot
@@ -21,6 +23,8 @@ def plots_initial(tomo, gt=None):
     ax = fig.add_subplot(111, projection='3d')
     ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
     ax.scatter(z[0, 0], z[0, 1], c='r')
+    if save_folder is not None:
+        plt.savefig(save_folder + 'latent_space_3d.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the smoothed distances and peaks
@@ -30,6 +34,11 @@ def plots_initial(tomo, gt=None):
     plt.figure(figsize=(4, 4))
     plt.plot(smoothed_dists)
     plt.scatter(peaks, smoothed_dists[peaks], c='r')
+    plt.title("Smoothed distances and peaks")
+    plt.xlabel("Time Step")
+    plt.ylabel("Smoothed Distance")
+    if save_folder is not None:
+        plt.savefig(save_folder + 'smoothed_distances.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the quaternions
@@ -50,10 +59,12 @@ def plots_initial(tomo, gt=None):
         plt.plot(gt[:, 3], '--', label=r'$q_3$', linewidth=2)
     plt.legend()
     plt.title("Initial Guess vs True Quaternion Components")
+    if save_folder is not None:
+        plt.savefig(save_folder + 'quaternions.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
 
-def plots_optim(tomo, gt_q=None, gt_v=None):
+def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
     
     predicted_object = tomo.volume.detach().cpu()
     projections_pred = tomo.full_forward_final().detach().cpu().numpy()
@@ -72,7 +83,8 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
     # Add a colorbar
     im = ax[0].imshow(predicted_object.sum(0))
     fig.colorbar(im, ax=ax)
-
+    if save_folder is not None:
+        plt.savefig(save_folder + 'predicted_object.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     if gt_v is not None:
@@ -88,7 +100,8 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         # Add a colorbar
         im = ax[0].imshow(gt_v.sum(0))
         fig.colorbar(im, ax=ax)
-
+        if save_folder is not None:
+            plt.savefig(save_folder + 'gt_object.png', dpi=300, bbox_inches='tight', pad_inches=0)
         plt.show()
 
     R_idx = np.random.randint(0, projections_pred.shape[0], 9)
@@ -98,6 +111,9 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         for j in range(3):
             im = ax[i, j].imshow(projections_pred[R_idx[i * 3 + j], 0])
             fig.colorbar(im, ax=ax[i, j])
+
+    if save_folder is not None:
+        plt.savefig(save_folder + 'predicted_projections.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     fig, ax = plt.subplots(3, 3, figsize=(6, 6))
@@ -106,6 +122,9 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         for j in range(3):
             im = ax[i, j].imshow(projections_gt[R_idx[i * 3 + j], 0])
             fig.colorbar(im, ax=ax[i, j])
+    
+    if save_folder is not None:
+        plt.savefig(save_folder + 'gt_projections.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the quaternions
@@ -123,6 +142,8 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         plt.plot(gt_q[:, 3], '--', label=r'$q_3$', linewidth=2)
     plt.legend()
     plt.title("Predicted vs. True Quaternion Components")
+    if save_folder is not None:
+        plt.savefig(save_folder + 'quaternions.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Difference between predicted and true quaternions
@@ -137,6 +158,8 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         plt.axhline(y=0, color='black', linestyle='--', linewidth=3)
         plt.legend()
         plt.title("Difference Predicted vs. True Quaternion Components")
+        if save_folder is not None:
+            plt.savefig(save_folder + 'quaternions_diff.png', dpi=300, bbox_inches='tight', pad_inches=0)
         plt.show()
 
     # 2x2 grid of scatter plots for each component of the quaternion
@@ -151,6 +174,8 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         ax[1, 0].set_title(r'$q_2$')
         ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
         ax[1, 1].set_title(r'$q_3$')
+        if save_folder is not None:
+            plt.savefig(save_folder + 'quaternions_scatter.png', dpi=300, bbox_inches='tight', pad_inches=0)
         plt.show()
 
    
@@ -168,6 +193,9 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
         axes[i].legend()
     axes[-1].set_xlabel("Time Step")
     plt.suptitle("Quaternion Components Over Time")
+    if save_folder is not None:
+        plt.savefig(save_folder + 'quaternions_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
+
     plt.show()
 
     # Convert to Euler angles (XYZ convention)
@@ -196,11 +224,14 @@ def plots_optim(tomo, gt_q=None, gt_v=None):
 
     axes[-1].set_xlabel("Time Step")
     plt.suptitle("Quaternion to Euler Trajectories (Fixed Discontinuities)")
+    if save_folder is not None:
+        plt.savefig(save_folder + 'euler_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
     plt.show()
 
 
     # 3D plot of the predicted object
     visualize_3d_volume(predicted_object.numpy())
+    
 
     # 3D plot of the ground truth object
     if gt_v is not None:
