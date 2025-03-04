@@ -231,7 +231,7 @@ class Tomography(dl.Application):
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device))
+            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device) + 1e-6)
         
         elif self.initial_volume == 'refraction':
             self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device) * 1.33)
@@ -384,7 +384,7 @@ class Tomography(dl.Application):
 
     def strictly_over_loss(self, volume, value=1.33):
         """
-        Computes a loss that penalizes values strictly below 1.33.
+        Computes a loss that penalizes values strictly below a value
         """
         loss = torch.sum(torch.relu(value - volume))  # Penalize values below 
         return loss / volume.numel()  # Normalize by total elements
@@ -682,7 +682,7 @@ class Tomography(dl.Application):
 if __name__ == "__main__":
     import simulate as sim
 
-    image_modality_list = ['fluorescence', 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    image_modality_list = ['fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal']
 
     for image_modality in image_modality_list:
@@ -712,6 +712,9 @@ if __name__ == "__main__":
             # Initialize the parameters
             tomo.initialize_parameters(projections, normalize=True)
             
+            # Visualize the latent space and the initial rotations
+            plotting.plots_initial(tomo, gt=q_gt.to('cpu'))
+
             # Train the model
             N = len(tomo.frames)
             idx = torch.arange(N)
@@ -754,7 +757,7 @@ if __name__ == "__main__":
             tomo.move_all_to_device("cuda")
             trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
             trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
-
+            tomo.move_all_to_device("cuda")
             print("Training time: ", (time.time() - start_time) / 60, " minutes")
 
             # Plot the training history

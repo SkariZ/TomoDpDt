@@ -12,7 +12,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 import scipy.ndimage
 
-def setup_optics(nsize, padding_xy=64, microscopy_regime='Brightfield', NA=0.7, wavelength=532e-9, resolution=100e-9, magnification=10, return_field=True):
+
+def setup_optics(nsize, padding_xy=64, microscopy_regime='Brightfield', NA=0.7, wavelength=532e-9, resolution=100e-9, magnification=1, return_field=True):
     """
     Set up the optical system, prepare simulation parameters, and compute the optical image.
 
@@ -176,7 +177,6 @@ class imaging_model(nn.Module):
                 image = self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
 
             elif self.microscopy_regime == 'fluorescence':
-                object[object < 1e-7] = 0
                 if object.sum() == 0:
                     object[32, 32, 32] = 1e-7
                     
@@ -280,12 +280,14 @@ if __name__ == "__main__":
     object2 = torch.tensor(object2).to('cuda')
 
     import volumes as V
-    object = V.VOL_FLUO
     object2 = V.VOL_FLUO
+    object = V.VOL_FLUO
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')
 
+    # Add random noise
     object_8 = torch.stack([object for _ in range(4)]+[object2 for _ in range(4)])
+    object_8 += torch.randn_like(object_8) * 1e-8 
 
     import time
 
@@ -301,7 +303,7 @@ if __name__ == "__main__":
     #print('Gradient:', object_16.grad)
 
     start = time.time()
-    for i in range(8):
+    for object in object_8:
         image = im_model(object)
     print('Time taken:', time.time() - start)
 
