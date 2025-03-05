@@ -139,7 +139,7 @@ class imaging_model(nn.Module):
         if object.dim() == 3:
             return self.imaging_step(object)
         elif object.dim() == 4 and object.size(0) == 1:
-            return self.imaging_step(object.squeeze(0))
+            return self.imaging_step(object.squeeze(0)).unsqueeze(0)
 
         if self.forward_case == 'vmap':
             imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
@@ -217,28 +217,25 @@ class SumAvgWeighted3d2d(nn.Module):
         return w_object.sum(dim=self.dim, keepdim=True)
 
 
-
-
 if __name__ == "__main__":
 
-    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='brightfield')
+    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='iscat')
     im_model = imaging_model(optics_setup)
 
     import volumes as V
-    object2 = V.VOL_GAUSS_MULT
-    object = V.VOL_GAUSS
+    object2 = np.load('../test_data/vol_potato2.npy') 
+    object = np.load('../test_data/vol_potato3.npy')   
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')
 
     # Add random noise
     object_8 = torch.stack([object for _ in range(4)]+[object2 for _ in range(4)])
-    object_8 += torch.randn_like(object_8) * 1e-8 
-
+    
     import time
 
     #Track gradient
     object_8.requires_grad = True
-
+    
     start = time.time()
     image16 = im_model(object_8)
     print('Time taken:', time.time() - start)
@@ -275,4 +272,4 @@ if __name__ == "__main__":
         plt.show()
     except AttributeError:
         pass
-    
+

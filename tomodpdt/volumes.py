@@ -7,7 +7,7 @@ import matplotlib.pyplot as plt
 ### Setttings ###
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
-RI_RANGE = (1.33, 1.45)
+RI_RANGE = (1.33, 1.42)
 
 # Set the random seed for reproducibility
 np.random.seed(123)

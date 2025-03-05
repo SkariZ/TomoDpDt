@@ -245,7 +245,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    def forward(self, idx, minibatch=64):
+    def forward(self, idx, minibatch=1):
         """
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
@@ -266,8 +266,8 @@ class Tomography(dl.Application):
 
         for b in b_idx:
             #Rotate the volume(s)
-            rotated_volumes = self.apply_rotation_batch(volumes[:len(b)], quaternions[b])
- 
+            rotated_volumes = self.apply_rotation_batch(volumes[0:len(b)], quaternions[b])
+
             #Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projections = self.imaging_model(rotated_volumes)
@@ -691,7 +691,7 @@ if __name__ == "__main__":
     import simulate as sim
     import os
 
-    image_modality_list = ['sum_projection', 'darkfield', 'brightfield']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    image_modality_list = ['brightfield', 'darkfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal', '1ax']
     save_folder_root = '../results2'
     if not os.path.exists(save_folder_root):
@@ -787,9 +787,6 @@ if __name__ == "__main__":
             torch.save(tomo.volume, f"{save_folder}volume_{image_modality}_{rotation_case}.pt")
             torch.save(tomo.rotation_params, f"{save_folder}/rotations_{image_modality}_{rotation_case}.pt")
 
-            # print gradients
-            #print(tomo.volume.grad)
-            #print(tomo.rotation_params.grad)
 
 
         

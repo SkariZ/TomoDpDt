@@ -42,6 +42,7 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
     elif volume_case == 'fluorescence':
         object = torch.tensor(VOL_FLUO, dtype=torch.float32, device=DEV)
     elif volume_case == 'gaussian_multiple':
+        VOL_GAUSS_MULT = object = np.load('../test_data/vol_potato3.npy')  
         object = torch.tensor(VOL_GAUSS_MULT, dtype=torch.float32, device=DEV)
     elif volume_case == 'shell':
         object = torch.tensor(VOL_SHELL, dtype=torch.float32, device=DEV)
