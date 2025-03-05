@@ -304,7 +304,7 @@ if __name__ == "__main__":
 
     start = time.time()
     for object in object_8:
-        image = im_model(object)
+        image = im_model(object).detach()
     print('Time taken:', time.time() - start)
 
     if image.device.type == 'cuda':

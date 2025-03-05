@@ -686,9 +686,9 @@ if __name__ == "__main__":
     import simulate as sim
     import os
 
-    image_modality_list = ['sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
-    rotation_case_list = ['random_sinusoidal']
-    save_folder_root = '../results'
+    image_modality_list = ['sum_projection', 'darkfield', 'brightfield']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    rotation_case_list = ['random_sinusoidal', '1ax']
+    save_folder_root = '../results2'
     if not os.path.exists(save_folder_root):
         os.makedirs(save_folder_root)
 
@@ -700,7 +700,7 @@ if __name__ == "__main__":
                 os.makedirs(save_folder)
 
             print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=100)
+            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=400)
 
             # Downsample the projections 2x and downsample the object 2x
             scale = 1
@@ -764,7 +764,7 @@ if __name__ == "__main__":
             #Toggle the gradients of the quaternion parameters
             tomo.toggle_gradients_quaternion(True)
             tomo.move_all_to_device("cuda")
-            trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
+            trainer = dl.Trainer(max_epochs=800, accelerator="auto", log_every_n_steps=10)
             trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
             tomo.move_all_to_device("cuda")
             print("Training time: ", (time.time() - start_time) / 60, " minutes")
