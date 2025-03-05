@@ -81,7 +81,10 @@ class Tomography(dl.Application):
         self.normalize = False
 
     def initialize_parameters(self, projections, **kwargs):
-        
+        """
+        Function to initialize the parameters of the model, 
+        set the initial rotation parameters and other settings.
+        """
         # Check if projections are a tensor
         if not isinstance(projections, torch.Tensor):
             projections = torch.tensor(projections)
@@ -152,9 +155,6 @@ class Tomography(dl.Application):
         @self.optimizer.params
         def params(self):
             return self.parameters()
-        
-        # Fit the model to the data
-        #self.fit(self.frames)
 
     def compute_global_min_max(self, projections):
         """
@@ -253,9 +253,6 @@ class Tomography(dl.Application):
         volume = self.volume
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         
-        # Normalize quaternions during computation - is done in apply_rotation.
-        #quaternions = quaternions / quaternions.norm(dim=-1, keepdim=True)
-
         batch_size = quaternions.shape[0]
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
 
@@ -299,15 +296,18 @@ class Tomography(dl.Application):
         idx = batch
         batch = self.frames[idx]
 
-        yhat = self.forward(idx)  # Estimated projections
+        # Forward step -Estimate the projections
+        yhat = self.forward(idx) 
 
         # Normalize the estimated projections
         if self.normalize:
             yhat = self.per_channel_normalization(yhat)
-   
-        with torch.no_grad():
-            latent_space = self.fc_mu(self.encoder(yhat))   # Estimated latent space
 
+        # Estimate the latent space
+        with torch.no_grad():
+            latent_space = self.fc_mu(self.encoder(yhat))
+        
+        # Compute the losses
         proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss(yhat, latent_space, batch, idx)
 
         # Compute the total loss
@@ -335,7 +335,10 @@ class Tomography(dl.Application):
         return tot_loss
     
     def compute_loss(self, yhat, latent_space, batch, idx):
-        
+        """
+        Compute the projection loss, latent loss, and other regularization terms.
+        """
+
         # Compute the projection loss - MAE
         proj_loss = F.l1_loss(yhat, batch)
 
@@ -379,10 +382,11 @@ class Tomography(dl.Application):
         proj_loss *= 10
         latent_loss *= 0.5
         rtv_loss *= 0.5
-        so_loss *= 1
-        q0_loss *= 100
         qv_loss *= 10
-
+        q0_loss *= 100
+        rtr_loss *= 1
+        so_loss *= 1
+        
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
     def strictly_over_loss(self, volume, value=1.33):
@@ -624,6 +628,7 @@ class Tomography(dl.Application):
 
             estimated_projections[i] = estimated_projection
 
+        # Normalize the estimated projections
         if self.normalize:
             estimated_projections = self.per_channel_normalization(
                 estimated_projections
@@ -675,7 +680,7 @@ class Tomography(dl.Application):
 
     def swap_rotation_axis(self):
         """ 
-        Swap the rotation axis. betwen x and y rotation. 
+        Swap the rotation axis. Between x and y rotation. 
         """
         # Swap the x and y rotation
         self.rotation_params[:, [1, 2]] = self.rotation_params[:, [2, 1]]
@@ -786,20 +791,5 @@ if __name__ == "__main__":
             #print(tomo.volume.grad)
             #print(tomo.rotation_params.grad)
 
-    #Check if tomo.volume has gradients
-    #print(tomo.volume.grad)
-    #quaternions = tomo.get_quaternions_final()
 
-    #volumes = torch.stack([tomo.apply_rotation(tomo.volume, q) for q in quaternions])
-
-   
-    # take time
-    #k = 32
-    #start = time.time()
-    #x = tomo.apply_rotation_batch(volumes[:k] , quaternions[:k])
-    #print("Time taken: ", time.time() - start)
-
-    #start = time.time()
-    #for i in range(k):
-    #    tomo.apply_rotation(tomo.volume, quaternions[i])
         

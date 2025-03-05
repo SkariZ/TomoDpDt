@@ -51,6 +51,36 @@ def generate_3d_volume(size, num_layers, layer_densities):
 
     return volume
 
+def sample_positions_3D(num_points, area_size, min_distance, edge_margin=8):
+    """
+    Generate random 3D positions while ensuring a minimum distance between them 
+    and keeping them away from edges.
+
+    Parameters:
+    - num_points (int): Number of points to generate.
+    - area_size (tuple): (width, height, depth) of the 3D space.
+    - min_distance (float): Minimum Euclidean distance between points.
+    - edge_margin (float): Minimum distance from edges.
+
+    Returns:
+    - np.array: Array of shape (num_points, 3) with sampled (x, y, z) positions.
+    """
+    positions = []
+
+    # Define valid sampling range (avoiding edges)
+    min_bounds = np.array([edge_margin, edge_margin, edge_margin])
+    max_bounds = np.array(area_size) - edge_margin
+
+    while len(positions) < num_points:
+        # Generate a random (x, y, z) point within the valid range
+        candidate = np.random.uniform(min_bounds, max_bounds)
+
+        # Check if it's at least min_distance away from all existing points
+        if all(np.linalg.norm(candidate - np.array(p)) >= min_distance for p in positions):
+            positions.append(candidate)
+
+    return np.array(positions).astype(int)
+
 
 ### VOLUME 1 ###
 grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
@@ -94,7 +124,7 @@ grid = np.zeros((SIZE, SIZE, SIZE))
 # Random points
 num_points = 10
 thickness = 1
-points = np.random.randint(SIZE//8, SIZE-SIZE//8, (num_points, 3))
+points = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
 
 # Set the random points to 1
 for point in points:
@@ -113,9 +143,12 @@ grid = np.zeros((SIZE, SIZE, SIZE))
 # Random points
 num_points = 12
 
+# Generate random positions with a minimum distance between them
+positions = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
+
 # add small gaussian blobs at random positions
 for i in range(10):
-    x, y, z = np.random.randint(SIZE//8, SIZE-SIZE//8, 3)
+    x, y, z = positions[i]
     blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * 2**2))
     grid += blob
 
@@ -124,6 +157,36 @@ grid /= grid.max()
 VOL_GAUSS_MULT = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 
 ##################
+
+### VOLUME 5 ###
+
+grid = np.zeros((SIZE, SIZE, SIZE))
+
+# Random shapes at random positions
+
+# 6 random positions that are not too close to the edges and not too close to each other
+positions = sample_positions_3D(6, (SIZE, SIZE, SIZE), min_distance=SIZE//4)
+
+count = 0
+# 3 random squares of random sizes
+for i in range(3):
+    x, y, z = positions[count]
+    size = np.random.randint(SIZE//16, SIZE//6)
+    grid[x:x+size, y:y+size, z:z+size] = 0.5
+    count += 1
+
+# 3 random circles of random sizes
+for i in range(3):
+    x, y, z = positions[count]
+    radius = np.random.randint(SIZE//16, SIZE//8)
+    blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * radius**2))
+    grid += blob
+    count += 1
+
+grid /= grid.max()
+
+VOL_RANDOM = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+
 
 
 if __name__== "__main__":
@@ -154,8 +217,23 @@ if __name__== "__main__":
 
     ### VOLUME 4 ###
     fig, ax = plt.subplots(1, 3, figsize=(8, 3))
-    fig.suptitle('3D Gaussian Blob')
+    fig.suptitle('3D Gaussian Blobs Small')
     for j in range(3):
         ax[j].imshow(VOL_GAUSS_MULT.sum(axis=j))
         ax[j].set_title(f'Axis {j}')
     plt.show()
+
+    ### VOLUME 5 ###
+    fig, ax = plt.subplots(1, 3, figsize=(8, 3))
+    fig.suptitle('3D Random Shapes')
+    for j in range(3):
+        ax[j].imshow(VOL_RANDOM.sum(axis=j))
+        ax[j].set_title(f'Axis {j}')
+    plt.show()
+
+    # Save the volumes as numpy files in ../test_data/
+    np.save('../test_data/vol_gauss.npy', VOL_GAUSS)
+    np.save('../test_data/vol_shell.npy', VOL_SHELL)
+    np.save('../test_data/vol_fluo.npy', VOL_FLUO)
+    np.save('../test_data/vol_gauss_mult.npy', VOL_GAUSS_MULT)
+    np.save('../test_data/vol_random.npy', VOL_RANDOM)
