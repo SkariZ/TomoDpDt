@@ -7,10 +7,9 @@ from torch.utils.data import DataLoader, TensorDataset
 from typing import Optional, Sequence#, Callable, List
 
 # Importing the necessary modules
-import estimate_rotations_from_latent as erfl
+import tomodpdt.estimate_rotations_from_latent as erfl
 import vaemod as vm
 
-import deeptrack as dt
 from deeplay.external import Adam
 
 import numpy as np
