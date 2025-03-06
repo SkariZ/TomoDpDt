@@ -63,6 +63,7 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
         plt.savefig(save_folder + 'quaternions.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
+    tomo.vae_model.to(tomo.frames.device)
     recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
     recon_vae_gt = tomo.frames[:9].cpu()
 

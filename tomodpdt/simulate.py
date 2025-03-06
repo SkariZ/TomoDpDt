@@ -56,7 +56,7 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
     elif rotation_case == 'sinusoidal':
         quaternions = R.generate_sinusoidal_quaternion(duration=duration, samples=samples)
     elif rotation_case == 'random_sinusoidal':
-        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
+        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples)
     elif rotation_case == '1ax':
         quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, phi=0, psi=0, noise=0.001)
     elif rotation_case == 'smooth_varying':
