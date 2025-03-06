@@ -137,28 +137,11 @@ class ConvVAE(nn.Module):
         
         return decoder
 
-
-class Dummy3d2d(nn.Module):
-    def __init__(self, dim=-1):
-        self.dim = dim
-        super(Dummy3d2d, self).__init__()
-
-    def forward(self, x):
-        #Return projection of the 3D volume
-        return x.sum(dim=self.dim)
-
-
 if __name__ == "__main__":
 
     N = 48
-
-    #Test dummy 3D to 2D model
-    dummy = Dummy3d2d()
-    x = torch.randn(N, N, N)
-    print(dummy(x).shape)
-
     vae = ConvVAE((2, N, N), latent_dim=2)
-
+    
     x = torch.randn(8, 2, N, N)
 
     vae_model = dl.VariationalAutoEncoder(latent_dim=2, input_size=(N, N))

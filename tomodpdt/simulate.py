@@ -22,14 +22,14 @@ VOL_GAUSS = V.VOL_GAUSS
 VOL_FLUO = V.VOL_FLUO
 VOL_GAUSS_MULT = V.VOL_GAUSS_MULT
 VOL_SHELL = V.VOL_SHELL
-
+VOL_RANDOM = V.VOL_RANDOM
 
 # Settings
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
 
 
-def create_data(volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, rotation_case='sinusoidal'):
+def create_data(volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, duration=2, rotation_case='sinusoidal'):
 
     image_modality = image_modality.lower()
 
@@ -42,29 +42,39 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
     elif volume_case == 'fluorescence':
         object = torch.tensor(VOL_FLUO, dtype=torch.float32, device=DEV)
     elif volume_case == 'gaussian_multiple':
-        VOL_GAUSS_MULT = object = np.load('../test_data/vol_potato3.npy')  
         object = torch.tensor(VOL_GAUSS_MULT, dtype=torch.float32, device=DEV)
     elif volume_case == 'shell':
         object = torch.tensor(VOL_SHELL, dtype=torch.float32, device=DEV)
+    elif volume_case == 'random':
+        object = torch.tensor(VOL_RANDOM, dtype=torch.float32, device=DEV)
     else:
         raise ValueError('Unknown volume case')
 
-    # Create a quaternion
+    # Create quaternions
     if rotation_case == 'noisy_sinusoidal':
-        quaternions = R.generate_noisy_sinusoidal_quaternion(duration=2, samples=samples, noise=0.001)
+        quaternions = R.generate_noisy_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
     elif rotation_case == 'sinusoidal':
-        quaternions = R.generate_sinusoidal_quaternion(duration=2, samples=samples)
+        quaternions = R.generate_sinusoidal_quaternion(duration=duration, samples=samples)
     elif rotation_case == 'random_sinusoidal':
-        quaternions = R.generate_random_sinusoidal_quaternion(duration=2, samples=samples, noise=0.001)
+        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
     elif rotation_case == '1ax':
-        quaternions = R.generate_random_sinusoidal_quaternion(duration=2, samples=samples, phi=0, psi=0, noise=0.001)
-        
+        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, phi=0, psi=0, noise=0.001)
+    elif rotation_case == 'smooth_varying':
+        quaternions = R.generate_smooth_varying_quaternion(duration=duration, samples=samples)
+    elif rotation_case == 'smooth_varying_random':
+        quaternions = R.generate_smooth_varying_quaternion(duration=duration, samples=samples)
+    else:
+        raise ValueError('Unknown rotation case')
+
     quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
     ch = 1
     # Create an imaging modality
     if image_modality == 'sum_projection':
-        imaging_model = IMT.Dummy3d2d(dim=-1)
+        imaging_model = IMT.Sum3d2d(dim=-1)
+    
+    elif image_modality.lower() == 'sum_projection_avg_weighted':
+        imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
 
     elif image_modality.lower() == 'brightfield':
         optics = IMT.setup_optics(SIZE, microscopy_regime='Brightfield')
@@ -90,6 +100,7 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
 
     # Dataset
     projections = torch.zeros((samples, ch, object.shape[1], object.shape[2]))
+    quaternions = torch.tensor(quaternions, dtype=torch.float32).to('cuda')
 
     # Generate the dataset
     for i in range(samples):
@@ -99,13 +110,13 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
 
         volume_new = rotmod.apply_rotation(
             volume=object, 
-            q=torch.tensor(quaternions[i], dtype=torch.float32).to('cuda')
-            )
+            q=quaternions[i]
+            )       
         
         # Compute the image
         image = imaging_model(volume_new)
 
-        if image_modality == 'sum_projection':
+        if image_modality == 'sum_projection' or image_modality == 'sum_projection_avg_weighted':
             projections[i, 0] = image.cpu().squeeze()
 
         if image_modality.lower() in ['brightfield']:

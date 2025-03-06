@@ -26,6 +26,7 @@ class Tomography(dl.Application):
                  rotation_optim_case: Optional[str] = None,  # Rotation optimization case ('quaternion', 'basis')
                  optimizer=None,
                  volume_init=None,  # Initial guess for volume explicitly
+                 minibatch=64,
                  **kwargs):
         
         # Set volume size
@@ -56,6 +57,9 @@ class Tomography(dl.Application):
         
         # Set volume initialization (if provided)
         self.volume_init = volume_init
+
+        # Set the minibatch size - default to 64 - can speed up training
+        self.minibatch = minibatch
         
         # Call the superclass constructor
         super().__init__(**kwargs)
@@ -128,8 +132,7 @@ class Tomography(dl.Application):
         # Retrieve the initial rotation parameters
         self.rotation_initial_dict = erfl.process_latent_space(
             z=latent_space, 
-            frames=projections,
-            #quaternions=QGT, 
+            frames=projections, 
             **kwargs
             )  # Later: add axis also
 
@@ -245,7 +248,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
 
-    def forward(self, idx, minibatch=1):
+    def forward(self, idx):
         """
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
@@ -257,12 +260,12 @@ class Tomography(dl.Application):
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
 
         # Create minibatches for rotation
-        if batch_size < minibatch:
-            minibatch = batch_size
+        if batch_size < self.minibatch:
+            self.minibatch = batch_size
 
         indexes = torch.arange(0, batch_size)
-        b_idx = [indexes[i:i + minibatch] for i in range(0, len(indexes), minibatch)]
-        volumes = torch.stack([volume.clone() for _ in range(minibatch)])
+        b_idx = [indexes[i:i + self.minibatch] for i in range(0, len(indexes), self.minibatch)]
+        volumes = torch.stack([volume.clone() for _ in range(self.minibatch)])
 
         for b in b_idx:
             #Rotate the volume(s)
@@ -571,7 +574,7 @@ class Tomography(dl.Application):
         # Apply grid_sample in batch mode
         rotated_volumes = F.grid_sample(volumes, rotated_grid, align_corners=True)
 
-        return rotated_volumes.squeeze(1)  # Remove channel dimension if necessary
+        return rotated_volumes.squeeze(1)  # Remove channel dimension
 
     def full_forward_final(self):
         """
@@ -691,9 +694,9 @@ if __name__ == "__main__":
     import simulate as sim
     import os
 
-    image_modality_list = ['brightfield', 'darkfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
-    rotation_case_list = ['random_sinusoidal', '1ax']
-    save_folder_root = '../results2'
+    image_modality_list = ['sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    rotation_case_list = ['smooth_varying_random']
+    save_folder_root = '../results3'
     if not os.path.exists(save_folder_root):
         os.makedirs(save_folder_root)
 

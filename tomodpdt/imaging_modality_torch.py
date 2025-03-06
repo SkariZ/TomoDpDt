@@ -121,14 +121,14 @@ class imaging_model(nn.Module):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # Unpack the properties
-        self.NA = self.filtered_properties['NA']
-        self.wavelength = self.filtered_properties['wavelength']
-        self.refractive_index_medium = self.filtered_properties['refractive_index_medium']
-        self.padding = self.filtered_properties['padding']
-        self.output_region = self.filtered_properties['output_region']
-        self.return_field = self.filtered_properties['return_field'] if 'return_field' in self.filtered_properties else False
+        #self.NA = self.filtered_properties['NA']
+        #self.wavelength = self.filtered_properties['wavelength']
+        #self.refractive_index_medium = self.filtered_properties['refractive_index_medium']
+        #self.padding = self.filtered_properties['padding']
+        #self.output_region = self.filtered_properties['output_region']
+        #self.return_field = self.filtered_properties['return_field'] if 'return_field' in self.filtered_properties else False
 
-        #
+        # Set padding values 
         self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
         self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
@@ -219,11 +219,11 @@ class SumAvgWeighted3d2d(nn.Module):
 
 if __name__ == "__main__":
 
-    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='iscat')
+    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='brightfield')
     im_model = imaging_model(optics_setup)
 
     import volumes as V
-    object2 = np.load('../test_data/vol_potato2.npy') 
+    object2 = np.load('../test_data/vol_potato0.npy') 
     object = np.load('../test_data/vol_potato3.npy')   
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')

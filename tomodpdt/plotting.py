@@ -5,7 +5,7 @@ from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
 
-def plots_initial(tomo, save_folder=None, gt=None):
+def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     
     z = tomo.latent.detach().cpu().numpy()
 
@@ -15,7 +15,7 @@ def plots_initial(tomo, save_folder=None, gt=None):
     plt.scatter(z[0, 0], z[0, 1], c='r')  # start_point
     plt.colorbar()
     if save_folder is not None:
-        plt.savefig(save_folder + 'latent_space.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'latent_space.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # 3D plot
@@ -24,7 +24,7 @@ def plots_initial(tomo, save_folder=None, gt=None):
     ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
     ax.scatter(z[0, 0], z[0, 1], c='r')
     if save_folder is not None:
-        plt.savefig(save_folder + 'latent_space_3d.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'latent_space_3d.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the smoothed distances and peaks
@@ -38,7 +38,7 @@ def plots_initial(tomo, save_folder=None, gt=None):
     plt.xlabel("Time Step")
     plt.ylabel("Smoothed Distance")
     if save_folder is not None:
-        plt.savefig(save_folder + 'smoothed_distances.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'smoothed_distances.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the quaternions
@@ -60,7 +60,32 @@ def plots_initial(tomo, save_folder=None, gt=None):
     plt.legend()
     plt.title("Initial Guess vs True Quaternion Components")
     if save_folder is not None:
-        plt.savefig(save_folder + 'quaternions.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'quaternions.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+    recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
+    recon_vae_gt = tomo.frames[:9].cpu()
+
+    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
+    plt.suptitle("Reconstructed frames from VAE")
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].imshow(recon_vae_pred[i * 3 + j, 0])
+            ax[i, j].set_title(f'Frame {i * 3 + j}')
+            ax[i, j].axis('off')
+    if save_folder is not None:
+        plt.savefig(save_folder + 'recon_vae.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
+    plt.suptitle("Ground truth frames")
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].imshow(recon_vae_gt[i * 3 + j, 0])
+            ax[i, j].set_title(f'Frame {i * 3 + j}')
+            ax[i, j].axis('off')
+    if save_folder is not None:
+        plt.savefig(save_folder + 'gt_frames.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
 
@@ -178,7 +203,6 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
             plt.savefig(save_folder + 'quaternions_scatter.png', dpi=300, bbox_inches='tight', pad_inches=0)
         plt.show()
 
-   
     timesteps = np.arange(quaternions_pred.shape[0])  # Time indices
 
     # Plot each quaternion component
