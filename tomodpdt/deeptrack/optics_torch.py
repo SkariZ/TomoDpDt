@@ -798,6 +798,120 @@ class Optics(Feature):
 
         return pupil_functions
 
+    def _pupil_tensor(
+        self:  'Optics',
+        shape: ArrayLike[int],
+        NA: float,
+        wavelength: float,
+        refractive_index_medium: float,
+        include_aberration: bool = True,   
+        defocus: Union[float, ArrayLike[float]] = 0,
+        **kwargs: Dict[str, Any],
+    ):
+        """Calculates the pupil function at different focal points.
+
+        Parameters
+        ----------
+        shape: array_like[int, int]
+            The shape of the pupil function.
+        NA: float
+            The NA of the limiting aperture.
+        wavelength: float
+            The wavelength of the scattered light in meters.
+        refractive_index_medium: float
+            The refractive index of the medium.
+        voxel_size: array_like[float (, float, float)]
+            The distance between pixels in the camera. A third value can be
+            included to define the resolution in the z-direction.
+        include_aberration: bool
+            If True, the aberration is included in the pupil function.
+        defocus: float or list[float]
+            The defocus of the system. If a list is given, the pupil is
+            calculated for each focal point. Defocus is given in meters.
+
+        Returns
+        -------
+        pupil: array_like[complex]
+            The pupil function. Shape is (z, y, x).
+
+        Examples
+        --------
+        Calculating the pupil function:
+
+        >>> import deeptrack as dt
+
+        >>> optics = dt.Optics()
+        >>> pupil = optics._pupil(
+        ...     shape=(128, 128),
+        ...     NA=0.8,
+        ...     wavelength=0.55e-6,
+        ...     refractive_index_medium=1.33,
+        ... )
+        >>> print(pupil.shape)
+        (1, 128, 128)
+        
+        """
+    
+        # Calculates the pupil at each z-position in defocus.
+        voxel_size = get_active_voxel_size()
+        shape = torch.tensor(shape)
+
+        # Pupil radius
+        R = NA / wavelength * torch.tensor(voxel_size)[:2]
+
+        x_radius = R[0] * shape[0]
+        y_radius = R[1] * shape[1]
+
+        x = (torch.linspace(-(shape[0] / 2), shape[0] / 2 - 1, shape[0])) / x_radius + 1e-8
+        y = (torch.linspace(-(shape[1] / 2), shape[1] / 2 - 1, shape[1])) / y_radius + 1e-8
+
+        W, H = torch.meshgrid(x, y, indexing='ij')
+        RHO = (W ** 2 + H ** 2).astype(torch.complex)
+        pupil_function = Image((RHO < 1) + 0.0j, copy=False)
+        # Defocus
+        z_shift = Image(
+            2
+            * np.pi
+            * refractive_index_medium
+            / wavelength
+            * voxel_size[2]
+            * np.sqrt(1 - (NA / refractive_index_medium) ** 2 * RHO),
+            copy=False,
+        )
+
+        z_shift._value[z_shift._value.imag != 0] = 0
+
+        try:
+            z_shift = np.nan_to_num(z_shift, False, 0, 0, 0)
+        except TypeError:
+            np.nan_to_num(z_shift, z_shift)
+
+        # Ensure defocus is a list of tensors or numbers
+        if isinstance(defocus, list):
+            # Convert each element to CPU and NumPy if it's a tensor
+            defocus = [x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in defocus]
+            defocus = np.array(defocus)  # Convert list to NumPy array
+        elif isinstance(defocus, torch.Tensor):
+            defocus = defocus.cpu().numpy()  # Convert single tensor to NumPy
+        else:
+            defocus = np.array(defocus)  # Default case, ensure it's an array
+
+        defocus = np.reshape(defocus, (-1, 1, 1))
+        z_shift = defocus * np.expand_dims(z_shift, axis=0)
+        
+        if include_aberration:
+            pupil = self.pupil
+            if isinstance(pupil, Feature):
+
+                pupil_function = pupil(pupil_function)
+
+            elif isinstance(pupil, np.ndarray):
+                pupil_function *= pupil
+
+        pupil_functions = pupil_function * np.exp(1j * z_shift)
+
+        return pupil_functions
+
     def _pad_volume(
             self:   'Optics',
             volume: ArrayLike[complex],
@@ -894,10 +1008,6 @@ class Optics(Feature):
                 old_region[2, 0] : old_region[2, 0] + limits[2, 1] - limits[2, 0],
             ] = volume
             return new_volume, new_limits
-
-
-    import torch
-    from typing import Any, Dict
 
     def _pad_volume_tensor(
         self: 'Optics',
