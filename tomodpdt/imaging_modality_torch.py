@@ -219,18 +219,18 @@ class SumAvgWeighted3d2d(nn.Module):
 
 if __name__ == "__main__":
 
-    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='brightfield')
+    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='fluorescence')
     im_model = imaging_model(optics_setup)
 
     import volumes as V
-    object2 = np.load('../test_data/vol_potato0.npy') 
-    object = np.load('../test_data/vol_potato3.npy')   
+    object2 = np.load('../test_data/vol_fluo.npy') 
+    object = np.load('../test_data/vol_fluo.npy')   
     object = torch.tensor(object).to('cuda')
     object2 = torch.tensor(object2).to('cuda')
 
     # Add random noise
-    object_8 = torch.stack([object for _ in range(4)]+[object2 for _ in range(4)])
-    
+    object_8 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
+    object_8 += torch.randn_like(object_8) * 1e-4
     import time
 
     #Track gradient

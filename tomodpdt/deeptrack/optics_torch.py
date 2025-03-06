@@ -754,6 +754,7 @@ class Optics(Feature):
         H = maybe_cupy(H)
         RHO = (W ** 2 + H ** 2).astype(complex)
         pupil_function = Image((RHO < 1) + 0.0j, copy=False)
+        
         # Defocus
         z_shift = Image(
             2
@@ -851,7 +852,13 @@ class Optics(Feature):
         (1, 128, 128)
         
         """
-    
+
+        # if device is in kwargs set it
+        if 'device' in kwargs:
+            device = kwargs['device']
+        else:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         # Calculates the pupil at each z-position in defocus.
         voxel_size = get_active_voxel_size()
         shape = torch.tensor(shape)
@@ -866,49 +873,47 @@ class Optics(Feature):
         y = (torch.linspace(-(shape[1] / 2), shape[1] / 2 - 1, shape[1])) / y_radius + 1e-8
 
         W, H = torch.meshgrid(x, y, indexing='ij')
-        RHO = (W ** 2 + H ** 2).astype(torch.complex)
+        W = W.to(device)
+        H = H.to(device)
+        RHO = (W ** 2 + H ** 2)
         pupil_function = Image((RHO < 1) + 0.0j, copy=False)
+
         # Defocus
         z_shift = Image(
             2
-            * np.pi
+            * torch.pi
             * refractive_index_medium
             / wavelength
             * voxel_size[2]
-            * np.sqrt(1 - (NA / refractive_index_medium) ** 2 * RHO),
+            * torch.sqrt(1 - (NA / refractive_index_medium) ** 2 * RHO)+0j,
             copy=False,
         )
 
         z_shift._value[z_shift._value.imag != 0] = 0
-
         try:
-            z_shift = np.nan_to_num(z_shift, False, 0, 0, 0)
+            z_shift = torch.nan_to_num(z_shift._value, nan=0.0, posinf=None, neginf=None)
         except TypeError:
-            np.nan_to_num(z_shift, z_shift)
+            torch.nan_to_num(z_shift, z_shift)
 
         # Ensure defocus is a list of tensors or numbers
         if isinstance(defocus, list):
             # Convert each element to CPU and NumPy if it's a tensor
-            defocus = [x.cpu().numpy() if isinstance(x, torch.Tensor) else x for x in defocus]
-            defocus = np.array(defocus)  # Convert list to NumPy array
-        elif isinstance(defocus, torch.Tensor):
-            defocus = defocus.cpu().numpy()  # Convert single tensor to NumPy
-        else:
-            defocus = np.array(defocus)  # Default case, ensure it's an array
-
-        defocus = np.reshape(defocus, (-1, 1, 1))
-        z_shift = defocus * np.expand_dims(z_shift, axis=0)
+            defocus = torch.tensor(defocus)
+ 
+        defocus = torch.reshape(defocus, (-1, 1, 1)).to(device)
+        z_shift = defocus * z_shift.unsqueeze(0)
         
         if include_aberration:
             pupil = self.pupil
-            if isinstance(pupil, Feature):
 
-                pupil_function = pupil(pupil_function)
+            if isinstance(pupil, Feature):
+                pupil_function = pupil(pupil_function.cpu().numpy())
+                pupil_function = torch.tensor(pupil_function).to(device)
 
             elif isinstance(pupil, np.ndarray):
-                pupil_function *= pupil
+                pupil_function *= torch.tensor(pupil).to(device)
 
-        pupil_functions = pupil_function * np.exp(1j * z_shift)
+        pupil_functions = pupil_function * torch.exp(1j * z_shift)
 
         return pupil_functions
 
@@ -1319,9 +1324,14 @@ class Fluorescence(Optics):
 
         #voxel_size = get_active_voxel_size()
 
-        pupils = self._pupil(
-            volume.shape[:2], defocus=z_values, include_aberration=False, **kwargs
+        #pupils = self._pupil(
+        #    volume.shape[:2], defocus=z_values, include_aberration=False, **kwargs
+        #    )
+
+        pupils = self._pupil_tensor(
+            volume.shape[:2], defocus=z_values, include_aberration=False, device=volume.device, **kwargs
             )
+                
         pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
         
         z_index = 0
@@ -1560,20 +1570,22 @@ class Brightfield(Optics):
         voxel_size = get_active_voxel_size()
 
         pupils = [
-            self._pupil(
-                volume.shape[:2], defocus=[1], include_aberration=False, **kwargs
+            self._pupil_tensor(
+                volume.shape[:2], defocus=[1], include_aberration=False, device=volume.device, **kwargs
             )[0],
-            self._pupil(
+            self._pupil_tensor(
                 volume.shape[:2],
                 defocus=[-z_limits[1]],
                 include_aberration=True,
-                **kwargs,
+                device=volume.device,
+                **kwargs
             )[0],
-            self._pupil(
+            self._pupil_tensor(
                 volume.shape[:2],
                 defocus=[0],
                 include_aberration=True,
-                **kwargs,
+                device=volume.device,
+                **kwargs
             )[0]
         ]
 
