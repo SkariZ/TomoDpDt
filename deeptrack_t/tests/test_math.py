@@ -7,7 +7,7 @@ import unittest
 import numpy as np
 from scipy.ndimage import uniform_filter
 
-from deeptrack import math
+from deeptrack_t import math
 
 
 class TestMath(unittest.TestCase):

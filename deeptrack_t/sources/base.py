@@ -113,7 +113,7 @@ import weakref
 
 import numpy as np
 
-from deeptrack.backend.core import DeepTrackNode
+from deeptrack_t.backend.core import DeepTrackNode
 
 class SourceDeepTrackNode(DeepTrackNode):
     """A node that creates child nodes when attributes are accessed.

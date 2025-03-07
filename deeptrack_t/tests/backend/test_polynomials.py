@@ -8,7 +8,7 @@
 
 import unittest
 
-from deeptrack.backend import polynomials
+from deeptrack_t.backend import polynomials
 
 
 class TestPolynomials(unittest.TestCase):

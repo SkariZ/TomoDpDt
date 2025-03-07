@@ -1,22 +1,22 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import scipy.ndimage
-
-import deeptrack as dt
-
 import torch
-import torch.nn as nn
 
 # Import modules from the tomodpdt package
-import rotations as R
-import forward_module as FM
-import imaging_modality_torch as IMT
+try:
+    import tomodpdt.rotations as R
+    import tomodpdt.forward_module as FM
+    import tomodpdt.imaging_modality_torch as IMT
+    import tomodpdt.volumes as V
+except:
+    import rotations as R
+    import forward_module as FM
+    import imaging_modality_torch as IMT
+    import volumes as V
 
 # Set the random seed for reproducibility
 np.random.seed(123)
 torch.manual_seed(123)
-
-import volumes as V
 
 VOL_GAUSS = V.VOL_GAUSS
 VOL_FLUO = V.VOL_FLUO
@@ -29,15 +29,20 @@ DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the dev
 SIZE = 64  # Size of the 3D object
 
 
-def create_data(volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, duration=2, rotation_case='sinusoidal'):
+def create_data(volume=None, volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, duration=2, rotation_case='sinusoidal'):
+    """
+    Function to create a dataset of 3D objects and their 2D projections, given the imaging modality and the rotation case.
+    """
 
-    image_modality = image_modality.lower()
+    image_modality = image_modality.lower() if isinstance(image_modality, str) else image_modality
 
     if image_modality == 'fluorescence':
         volume_case = 'fluorescence'
 
     # Create a 3D object
-    if volume_case == 'gaussian':
+    if volume is not None:
+        object = torch.tensor(volume, dtype=torch.float32, device=DEV)
+    elif volume_case == 'gaussian':
         object = torch.tensor(VOL_GAUSS, dtype=torch.float32, device=DEV)
     elif volume_case == 'fluorescence':
         object = torch.tensor(VOL_FLUO, dtype=torch.float32, device=DEV)
@@ -66,47 +71,48 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
     else:
         raise ValueError('Unknown rotation case')
 
-    quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
-
     ch = 1
     # Create an imaging modality
-    if image_modality == 'sum_projection':
+    if isinstance(image_modality, torch.nn.Module):
+        imaging_model = image_modality
+
+    elif image_modality == 'sum_projection':
         imaging_model = IMT.Sum3d2d(dim=-1)
     
-    elif image_modality.lower() == 'sum_projection_avg_weighted':
+    elif image_modality == 'sum_projection_avg_weighted':
         imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
 
-    elif image_modality.lower() == 'brightfield':
+    elif image_modality == 'brightfield':
         optics = IMT.setup_optics(SIZE, microscopy_regime='Brightfield')
         imaging_model = IMT.imaging_model(optics)
         ch = 2
 
-    elif image_modality.lower() == 'darkfield':
+    elif image_modality == 'darkfield':
         optics = IMT.setup_optics(SIZE, microscopy_regime='Darkfield')
         imaging_model = IMT.imaging_model(optics)
 
-    elif image_modality.lower() == 'iscat':
+    elif image_modality == 'iscat':
         optics = IMT.setup_optics(SIZE, microscopy_regime='Iscat')
         imaging_model = IMT.imaging_model(optics)
 
-    elif image_modality.lower() == 'fluorescence':
+    elif image_modality == 'fluorescence':
         optics = IMT.setup_optics(SIZE, microscopy_regime='Fluorescence')
         imaging_model = IMT.imaging_model(optics)
     else:
         raise ValueError('Unknown imaging modality')
     
-    # Create a rotation model
+    # Create a rotation model for the object
     rotmod = FM.ForwardModelSimple(N=SIZE)
 
     # Dataset
     projections = torch.zeros((samples, ch, object.shape[1], object.shape[2]))
-    quaternions = torch.tensor(quaternions, dtype=torch.float32).to('cuda')
+    quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
     # Generate the dataset
     for i in range(samples):
         # Progress in percentage
-        if i % 100 == 0: 
-            print(f'{i/samples * 100:.1f}%')
+        if i % 100 == 0 and i > 0: 
+            print(f'Simulating... {i/samples * 100:.1f}%')
 
         volume_new = rotmod.apply_rotation(
             volume=object, 
@@ -116,14 +122,14 @@ def create_data(volume_case='gaussian_multiple', image_modality='sum_projection'
         # Compute the image
         image = imaging_model(volume_new)
 
-        if image_modality == 'sum_projection' or image_modality == 'sum_projection_avg_weighted':
+        if imaging_model.microscopy_regime == 'sum_projection' or imaging_model.microscopy_regime == 'sum_projection_avg_weighted':
             projections[i, 0] = image.cpu().squeeze()
 
-        if image_modality.lower() in ['brightfield']:
+        if imaging_model.microscopy_regime in ['brightfield'] and ch == 2:
             projections[i, 0] = image.real.cpu().squeeze()
             projections[i, 1] = image.imag.cpu().squeeze()
 
-        if image_modality.lower() in ['darkfield', 'iscat', 'fluorescence']:
+        if imaging_model.microscopy_regime in ['darkfield', 'iscat', 'fluorescence']:
             projections[i, 0] = image.cpu().squeeze().real
     
     return object, quaternions, projections, imaging_model

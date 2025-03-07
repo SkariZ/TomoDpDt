@@ -1,19 +1,28 @@
-import deeptrack as dt  # Assuming deeptrack is used for optics
-
 import torch
 import torch.nn as nn
-from deeptrack.backend.units import (
-    create_context,
-    get_active_scale,
-    get_active_voxel_size,
-)
+
+try:
+    import sys
+    sys.path.append('..')
+    import deeptrack_t as dt
+    from deeptrack_t.backend.units import create_context
+except:
+    import deeptrack_t as dt
+    from deeptrack_t.backend.units import create_context
+
 
 import matplotlib.pyplot as plt
 import numpy as np
-import scipy.ndimage
 
-
-def setup_optics(nsize, padding_xy=64, microscopy_regime='Brightfield', NA=0.7, wavelength=532e-9, resolution=100e-9, magnification=1, return_field=True):
+def setup_optics(
+        nsize, 
+        padding_xy=64, 
+        microscopy_regime='Brightfield', 
+        NA=0.7, 
+        wavelength=532e-9, 
+        resolution=100e-9, 
+        magnification=1, 
+        return_field=True):
     """
     Set up the optical system, prepare simulation parameters, and compute the optical image.
 
@@ -120,14 +129,6 @@ class imaging_model(nn.Module):
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
-        # Unpack the properties
-        #self.NA = self.filtered_properties['NA']
-        #self.wavelength = self.filtered_properties['wavelength']
-        #self.refractive_index_medium = self.filtered_properties['refractive_index_medium']
-        #self.padding = self.filtered_properties['padding']
-        #self.output_region = self.filtered_properties['output_region']
-        #self.return_field = self.filtered_properties['return_field'] if 'return_field' in self.filtered_properties else False
-
         # Set padding values 
         self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
         self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
@@ -200,7 +201,6 @@ class Sum3d2d(nn.Module):
         super(Sum3d2d, self).__init__()
 
     def forward(self, x):
-        # Return projection of the 3D volume
         return x.sum(dim=self.dim, keepdim=True)
 
 
@@ -212,7 +212,6 @@ class SumAvgWeighted3d2d(nn.Module):
 
     def forward(self, x):
         self.weight_along_dim = torch.linspace(1, 0, x.size()[self.dim]).to(x.device)
-        # Return projection of the 3D volume
         w_object = x * self.weight_along_dim
         return w_object.sum(dim=self.dim, keepdim=True)
 
@@ -230,7 +229,7 @@ if __name__ == "__main__":
 
     # Add random noise
     object_8 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
-    object_8 += torch.randn_like(object_8) * 1e-4
+    
     import time
 
     #Track gradient

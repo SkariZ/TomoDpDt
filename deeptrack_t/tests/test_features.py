@@ -12,7 +12,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack import features, properties, scatterers, units
+from deeptrack_t import features, properties, scatterers, units
 
 
 def grid_test_features(
@@ -288,7 +288,7 @@ class TestFeatures(unittest.TestCase):
 
     def test_Feature_store_properties_in_image(self):
 
-        from deeptrack.image import Image
+        from deeptrack_t.image import Image
 
         class FeatureAddValue(features.Feature):
             def get(self, image, value_to_add=0, **kwargs):

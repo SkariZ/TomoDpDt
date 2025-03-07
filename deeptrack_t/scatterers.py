@@ -167,9 +167,9 @@ import warnings
 from pint import Quantity
 import numpy as np
 
-from deeptrack.holography import get_propagation_matrix
+from deeptrack_t.holography import get_propagation_matrix
 from . import image
-from deeptrack.backend.units import (
+from deeptrack_t.backend.units import (
     ConversionTable,
     get_active_scale,
     get_active_voxel_size,

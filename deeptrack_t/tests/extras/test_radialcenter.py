@@ -2,7 +2,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack.extras import radialcenter
+from deeptrack_t.extras import radialcenter
 
 
 class TestRadialCenter(unittest.TestCase):

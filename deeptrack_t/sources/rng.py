@@ -35,8 +35,8 @@ from typing import Any, List, Callable
 
 import numpy as np
 
-from deeptrack.sources.base import Source
-from deeptrack.backend.core import DeepTrackNode
+from deeptrack_t.sources.base import Source
+from deeptrack_t.backend.core import DeepTrackNode
 
 
 class NumpyRNG(Source, np.random.RandomState):

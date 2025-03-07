@@ -1,5 +1,5 @@
 import numpy as np
-import deeptrack as dt  # Assuming deeptrack is used for optics
+import deeptrack_t as dt  # Assuming deeptrack is used for optics
 
 import matplotlib.pyplot as plt
 

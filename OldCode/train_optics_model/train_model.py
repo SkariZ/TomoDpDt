@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 import deeplay as dl
-import deeptrack as dt
+import deeptrack_t as dt
 from torch.utils.data import DataLoader, TensorDataset
 
 import modelv2 as m

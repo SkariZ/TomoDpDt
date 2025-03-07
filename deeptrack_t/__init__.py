@@ -44,21 +44,21 @@ else:
 if HAS_TENSORFLOW and HAS_TORCH:
     import torch # torch must be imported before tensorflow'''#TBE
 
-from deeptrack.features import *
-from deeptrack.aberrations import *
-from deeptrack.augmentations import *
+from deeptrack_t.features import *
+from deeptrack_t.aberrations import *
+from deeptrack_t.augmentations import *
 
-from deeptrack.math import *
-from deeptrack.noises import *
+from deeptrack_t.math import *
+from deeptrack_t.noises import *
 #from deeptrack.optics import *
-from deeptrack.optics_torch import *
-from deeptrack.scatterers import *
-from deeptrack.sequences import *
-from deeptrack.elementwise import *
-from deeptrack.statistics import *
-from deeptrack.holography import *
+from deeptrack_t.optics_torch import *
+from deeptrack_t.scatterers import *
+from deeptrack_t.sequences import *
+from deeptrack_t.elementwise import *
+from deeptrack_t.statistics import *
+from deeptrack_t.holography import *
 
-from deeptrack.image import strip
+from deeptrack_t.image import strip
 
 # if not HAS_TENSORFLOW:
     # Lazy imports to avoid overhead of importing tensorflow
@@ -85,7 +85,7 @@ if should_import:
     from . import pytorch
     from . import deeplay
 
-from deeptrack import (
+from deeptrack_t import (
     image,
     utils,
     backend,

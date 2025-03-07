@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack import holography
+from deeptrack_t import holography
 
 class TestOpticalFieldFunctions(unittest.TestCase):
     

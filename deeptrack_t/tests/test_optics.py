@@ -4,8 +4,8 @@ import sys
 
 import unittest
 
-from deeptrack import features
-from deeptrack import units as u
+from deeptrack_t import features
+from deeptrack_t import units as u
 from .. import optics
 
 from ..scatterers import PointParticle, Sphere

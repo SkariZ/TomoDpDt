@@ -10,7 +10,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack.backend import mie
+from deeptrack_t.backend import mie
 
 
 class TestMie(unittest.TestCase):

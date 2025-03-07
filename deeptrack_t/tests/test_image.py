@@ -12,7 +12,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack import features, image
+from deeptrack_t import features, image
 
 
 class TestImage(unittest.TestCase):

@@ -1,21 +1,26 @@
 import deeplay as dl
+from deeplay.external import Adam
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
 from typing import Optional, Sequence#, Callable, List
+import time
 
 # Importing the necessary modules
-#import tomodpdt.estimate_rotations_from_latent as erfl
-import estimate_rotations_from_latent as erfl
-import vaemod as vm
+try: 
+    import tomodpdt.estimate_rotations_from_latent as erfl
+    import tomodpdt.vaemod as vm
+    import tomodpdt.plotting as plotting
+    import tomodpdt.simulate as sim
+except:
+    import estimate_rotations_from_latent as erfl
+    import vaemod as vm
+    import plotting
+    import simulate as sim
 
-from deeplay.external import Adam
-
-import numpy as np
-import time
-import plotting
 
 class Tomography(dl.Application):
     def __init__(self,
@@ -24,9 +29,10 @@ class Tomography(dl.Application):
                  imaging_model: Optional[torch.nn.Module] = None,
                  initial_volume: Optional[str] = None,  # Initial guess for volume
                  rotation_optim_case: Optional[str] = None,  # Rotation optimization case ('quaternion', 'basis')
-                 optimizer=None,
-                 volume_init=None,  # Initial guess for volume explicitly
-                 minibatch=64,
+                 optimizer = None,
+                 volume_init = None,  # Initial guess for volume explicitly
+                 minibatch = 64,
+                 loss_weights = None,
                  **kwargs):
         
         # Set volume size
@@ -45,7 +51,7 @@ class Tomography(dl.Application):
         
         # Determine the device (cuda if available, else cpu)
         self._device = torch.device("cuda" if torch.cuda.is_available() else getattr(vae_model, "device", "cpu"))
-        #self._device = torch.device("cpu")
+        
         # Set initial volume if provided, otherwise default to "zeros"
         self.initial_volume = initial_volume if initial_volume is not None else "zeros"
         
@@ -60,14 +66,29 @@ class Tomography(dl.Application):
 
         # Set the minibatch size - default to 64 - can speed up training
         self.minibatch = minibatch
+
+        # Set the loss weights
+        self.loss_weights = loss_weights if loss_weights is not None else {
+            'proj_loss': 10,
+            'latent_loss': 0.5,
+            'rtv_loss': 0.5,
+            'qv_loss': 10,
+            'q0_loss': 100,
+            'rtr_loss': 1,
+            'so_loss': 1
+            }
+        
+        # Raise error if loss weights don´t contain all the necessary keys
+        if not all(k in self.loss_weights for k in ['proj_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'so_loss']):
+            raise ValueError("Loss weights must contain all the necessary keys.")
         
         # Call the superclass constructor
         super().__init__(**kwargs)
 
         # Set the imaging model function if 'projection' is selected
-        if self.imaging_model == "projection":
+        if self.imaging_model == None:
             def projection(volume):
-                # Simple projection summing along one axis (dim=2)
+                # Simple projection summing along one axis
                 return torch.sum(volume, dim=-1)
             self.imaging_model = projection
 
@@ -76,7 +97,7 @@ class Tomography(dl.Application):
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
         self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self._device)
 
-        # Create base 3D grid
+        # Set the grid for batch rotation
         lin = torch.linspace(-1, 1, self.N, device=self._device)
         x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
         self.grid_batch = torch.stack((x, y, z), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
@@ -149,10 +170,6 @@ class Tomography(dl.Application):
 
         # Setting frames to the number of rotations
         self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
-
-        # Normalize back to the original range
-        #if self.normalize:
-        #    self.frames = self.per_channel_denormalization(self.frames)
 
         # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
         @self.optimizer.params
@@ -299,7 +316,7 @@ class Tomography(dl.Application):
         idx = batch
         batch = self.frames[idx]
 
-        # Forward step -Estimate the projections
+        # Forward step - Estimate the projections
         yhat = self.forward(idx) 
 
         # Normalize the estimated projections
@@ -311,7 +328,9 @@ class Tomography(dl.Application):
             latent_space = self.fc_mu(self.encoder(yhat))
         
         # Compute the losses
-        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss(yhat, latent_space, batch, idx)
+        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss(
+            yhat, latent_space, batch, idx, self.loss_weights
+            )
 
         # Compute the total loss
         tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
@@ -337,7 +356,7 @@ class Tomography(dl.Application):
             )
         return tot_loss
     
-    def compute_loss(self, yhat, latent_space, batch, idx):
+    def compute_loss(self, yhat, latent_space, batch, idx, loss_weights=None):
         """
         Compute the projection loss, latent loss, and other regularization terms.
         """
@@ -382,13 +401,22 @@ class Tomography(dl.Application):
             so_loss = self.strictly_over_loss(self.volume, value=0)
 
         # Scale the losses
-        proj_loss *= 10
-        latent_loss *= 0.5
-        rtv_loss *= 0.5
-        qv_loss *= 10
-        q0_loss *= 100
-        rtr_loss *= 1
-        so_loss *= 1
+        if loss_weights is not None and isinstance(loss_weights, dict):
+            proj_loss *= loss_weights['proj_loss']
+            latent_loss *= loss_weights['latent_loss']
+            rtv_loss *= loss_weights['rtv_loss']
+            qv_loss *= loss_weights['qv_loss']
+            q0_loss *= loss_weights['q0_loss']
+            rtr_loss *= loss_weights['rtr_loss']
+            so_loss *= loss_weights['so_loss']
+        else:
+            proj_loss *= 10
+            latent_loss *= 0.5
+            rtv_loss *= 0.5
+            qv_loss *= 10
+            q0_loss *= 100
+            rtr_loss *= 1
+            so_loss *= 1
         
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
@@ -469,6 +497,19 @@ class Tomography(dl.Application):
         reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.shape[0]
 
         return reg_terms
+    
+    def sinogram_loss(self, sinogram, sinogram_pred):
+        """
+        Compute the loss between the true and predicted sinograms.
+
+        Args:
+        - sinogram (torch.Tensor): True sinogram.
+        - sinogram_pred (torch.Tensor): Predicted sinogram.
+
+        Returns:
+        - loss (torch.Tensor): The loss between the sinograms.
+        """
+        return F.l1_loss(sinogram, sinogram_pred)
 
     def get_quaternions(self, rotations=None):
         """
@@ -691,7 +732,6 @@ class Tomography(dl.Application):
 
 # Testing the code
 if __name__ == "__main__":
-    import simulate as sim
     import os
 
     image_modality_list = ['brightfield', 'fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']

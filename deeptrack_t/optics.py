@@ -134,14 +134,14 @@ Simulating an image with the `Fluorescence` class:
 
 from pint import Quantity
 from typing import Any, Dict, List, Tuple, Union
-from deeptrack.backend.units import (
+from deeptrack_t.backend.units import (
     ConversionTable,
     create_context,
     get_active_scale,
     get_active_voxel_size,
 )
-from deeptrack.math import AveragePooling
-from deeptrack.features import propagate_data_to_dependencies
+from deeptrack_t.math import AveragePooling
+from deeptrack_t.features import propagate_data_to_dependencies
 import numpy as np
 from .features import DummyFeature, Feature, StructuralFeature
 from .image import Image, pad_image_to_fft, maybe_cupy
@@ -152,7 +152,7 @@ import warnings
 
 from . import units as u
 from .backend import config
-from deeptrack import image
+from deeptrack_t import image
 
 
 class Microscope(StructuralFeature):

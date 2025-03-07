@@ -36,8 +36,8 @@ Simulate optical field propagation with Fourier transforms:
 
 """
 
-from deeptrack.image import maybe_cupy
-from deeptrack import Feature
+from deeptrack_t.image import maybe_cupy
+from deeptrack_t import Feature
 import numpy as np
 
 

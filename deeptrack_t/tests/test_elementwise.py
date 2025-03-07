@@ -12,7 +12,7 @@ from numpy.testing._private.utils import assert_almost_equal
 from .. import elementwise, features, Image
 
 import numpy as np
-from deeptrack.backend._config import cupy as cp
+from deeptrack_t.backend._config import cupy as cp
 
 import numpy.testing
 import inspect

@@ -74,8 +74,8 @@ from typing import List
 
 import numpy as np
 
-from deeptrack import Image
-from deeptrack import Feature
+from deeptrack_t import Image
+from deeptrack_t import Feature
 
 
 class Reducer(Feature):

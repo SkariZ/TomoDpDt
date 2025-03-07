@@ -6,7 +6,7 @@ import unittest
 
 import numpy as np
 
-from deeptrack import statistics, features
+from deeptrack_t import statistics, features
 
 
 class TestFeatures(unittest.TestCase):

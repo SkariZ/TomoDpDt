@@ -50,7 +50,7 @@ import glob
 import os
 from typing import List, Tuple
 
-from deeptrack.sources.base import Source
+from deeptrack_t.sources.base import Source
 
 known_extensions = ["png", "jpg", "jpeg", "tif", "tiff", "bmp", "gif"]
 

@@ -6,8 +6,8 @@ import unittest
 
 import numpy as np
 
-from deeptrack.image import Image
-from deeptrack import noises
+from deeptrack_t.image import Image
+from deeptrack_t import noises
 
 
 class TestNoises(unittest.TestCase):

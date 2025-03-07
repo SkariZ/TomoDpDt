@@ -8,11 +8,11 @@
 
 import unittest
 
-from deeptrack.backend.core import DeepTrackNode
-from deeptrack.utils import get_kwarg_names
+from deeptrack_t.backend.core import DeepTrackNode
+from deeptrack_t.utils import get_kwarg_names
 import numpy as np
 
-from deeptrack import properties
+from deeptrack_t import properties
 
 
 class TestProperties(unittest.TestCase):

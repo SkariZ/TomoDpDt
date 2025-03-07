@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import numpy as np
 from typing import Union, Optional
-from deeptrack.image import Image
+from deeptrack_t.image import Image
 
 class Dataset(torch.utils.data.Dataset):
     def __init__(self,

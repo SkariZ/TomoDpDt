@@ -4,28 +4,34 @@ import torch
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
+def plot_latent_space(z, save_folder=None, dpi=300):
+    fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+    
+    # 2D plot
+    axes[0].set_title("Latent space")
+    scatter = axes[0].scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
+    axes[0].scatter(z[0, 0], z[0, 1], c='r')  # Start point
+    fig.colorbar(scatter, ax=axes[0])
+    
+    # 3D plot
+    ax = fig.add_subplot(1, 2, 2, projection='3d')
+    ax.set_title("Latent space (3D)")
+    ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
+    ax.scatter(z[0, 0], z[0, 1], 0, c='r')
+    
+    plt.tight_layout()
+    
+    if save_folder is not None:
+        plt.savefig(save_folder + 'latent_space_combined.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    
+    plt.show()
 
 def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     
     z = tomo.latent.detach().cpu().numpy()
 
-    plt.figure(figsize=(4, 4))
-    plt.title("Latent space")
-    plt.scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
-    plt.scatter(z[0, 0], z[0, 1], c='r')  # start_point
-    plt.colorbar()
-    if save_folder is not None:
-        plt.savefig(save_folder + 'latent_space.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
-
-    # 3D plot
-    fig = plt.figure(figsize=(4, 4))
-    ax = fig.add_subplot(111, projection='3d')
-    ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
-    ax.scatter(z[0, 0], z[0, 1], c='r')
-    if save_folder is not None:
-        plt.savefig(save_folder + 'latent_space_3d.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    # Plot the latent space
+    plot_latent_space(z, save_folder=save_folder, dpi=dpi)
 
     # Plot the smoothed distances and peaks
     smoothed_dists = tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
@@ -130,6 +136,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
             plt.savefig(save_folder + 'gt_object.png', dpi=300, bbox_inches='tight', pad_inches=0)
         plt.show()
 
+    # Plot the projections
     R_idx = np.random.randint(0, projections_pred.shape[0], 9)
     fig, ax = plt.subplots(3, 3, figsize=(6, 6))
     plt.suptitle("Predicted projections")
@@ -255,7 +262,8 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
 
 
     # 3D plot of the predicted object
-    visualize_3d_volume(predicted_object.numpy())
+    visualize_3d_volume(predicted_object.numpy(), save_folder=save_folder)
+
     
 
     # 3D plot of the ground truth object
@@ -263,7 +271,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
         visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 
@@ -319,3 +327,6 @@ def visualize_3d_volume(volume, sigma=0.8, surface_count=15, opacity=0.5, bgcolo
     )
 
     fig.show()
+
+    if save_folder is not None:
+        fig.write_html(save_folder + '3d_volume.html')

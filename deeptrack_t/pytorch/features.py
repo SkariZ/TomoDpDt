@@ -1,5 +1,5 @@
-from deeptrack.features import Feature
-from deeptrack.backend import config
+from deeptrack_t.features import Feature
+from deeptrack_t.backend import config
 import torch
 import numpy as np
 from typing import Literal

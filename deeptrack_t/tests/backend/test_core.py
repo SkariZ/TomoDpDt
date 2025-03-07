@@ -8,7 +8,7 @@
 
 import unittest
 
-from deeptrack.backend import core
+from deeptrack_t.backend import core
 
 
 class TestCore(unittest.TestCase):
