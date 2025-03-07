@@ -694,9 +694,9 @@ if __name__ == "__main__":
     import simulate as sim
     import os
 
-    image_modality_list = ['fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
-    rotation_case_list = ['random_sinusoidal']
-    save_folder_root = '../results3'
+    image_modality_list = ['brightfield', 'fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
+    rotation_case_list = ['random_sinusoidal', '1ax']
+    save_folder_root = '../results4'
     if not os.path.exists(save_folder_root):
         os.makedirs(save_folder_root)
 
