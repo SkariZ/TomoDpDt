@@ -12,12 +12,18 @@ def plot_latent_space(z, save_folder=None, dpi=300):
     scatter = axes[0].scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
     axes[0].scatter(z[0, 0], z[0, 1], c='r')  # Start point
     fig.colorbar(scatter, ax=axes[0])
+    # Set labels
+    axes[0].set_xlabel('z1')
+    axes[0].set_ylabel('z2')
     
     # 3D plot
     ax = fig.add_subplot(1, 2, 2, projection='3d')
     ax.set_title("Latent space (3D)")
     ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
     ax.scatter(z[0, 0], z[0, 1], 0, c='r')
+    # Set labels
+    ax.set_xlabel('z1')
+    ax.set_ylabel('z2')
     
     plt.tight_layout()
     
@@ -37,62 +43,75 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     smoothed_dists = tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
     peaks = tomo.rotation_initial_dict['peaks'].cpu().numpy()
 
-    plt.figure(figsize=(4, 4))
-    plt.plot(smoothed_dists)
-    plt.scatter(peaks, smoothed_dists[peaks], c='r')
-    plt.title("Smoothed distances and peaks")
-    plt.xlabel("Time Step")
-    plt.ylabel("Smoothed Distance")
-    if save_folder is not None:
-        plt.savefig(save_folder + 'smoothed_distances.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    import matplotlib.gridspec as gridspec
 
-    # Plot the quaternions
+    fig = plt.figure(figsize=(12, 4))
+    gs = gridspec.GridSpec(1, 2, width_ratios=[1, 2])  # 1:2 ratio
+
+    # **Plot 1: Smoothed Distances (Narrow)**
+    ax0 = plt.subplot(gs[0])
+    ax0.plot(smoothed_dists, label="Smoothed Distance")
+    ax0.scatter(peaks, smoothed_dists[peaks], c='r', label="Peaks")
+    ax0.set_title("Smoothed Distances and Peaks")
+    ax0.set_xlabel("Time Step")
+    ax0.set_ylabel("Smoothed Distance")
+    ax0.legend()
+
+    # **Plot 2: Quaternions (Wider)**
+    ax1 = plt.subplot(gs[1:])
     q1 = tomo.rotation_initial_dict['quaternions'].cpu().numpy()
 
-    plt.figure(figsize=(7, 4))
-    plt.plot(q1[:, 0], label=r'$q_0$', linewidth=2)
-    plt.plot(q1[:, 1], label=r'$q_1$', linewidth=2)
-    plt.plot(q1[:, 2], label=r'$q_2$', linewidth=2)
-    plt.plot(q1[:, 3], label=r'$q_3$', linewidth=2)
-    # Add a vertical line where q1 ends
-    plt.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
+    ax1.plot(q1[:, 0], label=r'$q_0$', linewidth=2)
+    ax1.plot(q1[:, 1], label=r'$q_1$', linewidth=2)
+    ax1.plot(q1[:, 2], label=r'$q_2$', linewidth=2)
+    ax1.plot(q1[:, 3], label=r'$q_3$', linewidth=2)
+    ax1.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
+
     if gt is not None:
         gt = gt.cpu().numpy()
-        plt.plot(gt[:, 0], '--', label=r'$q_0$', linewidth=2)
-        plt.plot(gt[:, 1], '--', label=r'$q_1$', linewidth=2)
-        plt.plot(gt[:, 2], '--', label=r'$q_2$', linewidth=2)
-        plt.plot(gt[:, 3], '--', label=r'$q_3$', linewidth=2)
-    plt.legend()
-    plt.title("Initial Guess vs True Quaternion Components")
+        ax1.plot(gt[:, 0], '--', label=r'$q_0$ (GT)', linewidth=2)
+        ax1.plot(gt[:, 1], '--', label=r'$q_1$ (GT)', linewidth=2)
+        ax1.plot(gt[:, 2], '--', label=r'$q_2$ (GT)', linewidth=2)
+        ax1.plot(gt[:, 3], '--', label=r'$q_3$ (GT)', linewidth=2)
+
+    ax1.set_title("Initial Guess vs True Quaternion Components")
+    ax1.legend()
+
+    # **Save if needed**
     if save_folder is not None:
-        plt.savefig(save_folder + 'quaternions.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'combined_plot_wider.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+
     plt.show()
 
     tomo.vae_model.to(tomo.frames.device)
     recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
     recon_vae_gt = tomo.frames[:9].cpu()
 
-    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
-    plt.suptitle("Reconstructed frames from VAE")
-    for i in range(3):
-        for j in range(3):
-            ax[i, j].imshow(recon_vae_pred[i * 3 + j, 0])
-            ax[i, j].set_title(f'Frame {i * 3 + j}')
-            ax[i, j].axis('off')
-    if save_folder is not None:
-        plt.savefig(save_folder + 'recon_vae.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    fig, ax = plt.subplots(3, 6, figsize=(12, 6))  # 3 rows, 6 columns
+    plt.suptitle("Reconstructed vs Ground Truth Frames", fontsize=14)
 
-    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
-    plt.suptitle("Ground truth frames")
+    # Add column headers
+    for j, label in zip([1, 4], ["Reconstructed", "Ground Truth"]):
+        ax[0, j].set_title(label, fontsize=16, fontweight="bold")
+
     for i in range(3):
         for j in range(3):
-            ax[i, j].imshow(recon_vae_gt[i * 3 + j, 0])
-            ax[i, j].set_title(f'Frame {i * 3 + j}')
+            # Reconstructed frames (Left 3 columns)
+            ax[i, j].imshow(recon_vae_pred[i * 3 + j, 0], cmap="gray")
+            ax[i, j].set_title(f'Recon {i * 3 + j}')
+            # Add a red  thin line in the middle
+            ax[i, j].axvline(x=recon_vae_pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
             ax[i, j].axis('off')
+
+            # Ground truth frames (Right 3 columns)
+            ax[i, j + 3].imshow(recon_vae_gt[i * 3 + j, 0], cmap="gray")
+            ax[i, j + 3].set_title(f'GT {i * 3 + j}')
+            # Add a red thin line in the middle
+            ax[i, j + 3].axvline(x=recon_vae_gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+            ax[i, j + 3].axis('off')
+
     if save_folder is not None:
-        plt.savefig(save_folder + 'gt_frames.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'recon_vs_gt.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
 
