@@ -115,7 +115,7 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     plt.show()
 
 
-def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
+def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
     
     predicted_object = tomo.volume.detach().cpu()
     projections_pred = tomo.full_forward_final().detach().cpu().numpy()
@@ -135,7 +135,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
     im = ax[0].imshow(predicted_object.sum(0))
     fig.colorbar(im, ax=ax)
     if save_folder is not None:
-        plt.savefig(save_folder + 'predicted_object.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'predicted_object.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     if gt_v is not None:
@@ -152,7 +152,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
         im = ax[0].imshow(gt_v.sum(0))
         fig.colorbar(im, ax=ax)
         if save_folder is not None:
-            plt.savefig(save_folder + 'gt_object.png', dpi=300, bbox_inches='tight', pad_inches=0)
+            plt.savefig(save_folder + 'gt_object.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
         plt.show()
 
     # Plot the projections
@@ -165,7 +165,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
             fig.colorbar(im, ax=ax[i, j])
 
     if save_folder is not None:
-        plt.savefig(save_folder + 'predicted_projections.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'predicted_projections.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     fig, ax = plt.subplots(3, 3, figsize=(6, 6))
@@ -176,7 +176,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
             fig.colorbar(im, ax=ax[i, j])
     
     if save_folder is not None:
-        plt.savefig(save_folder + 'gt_projections.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'gt_projections.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Plot the quaternions
@@ -195,7 +195,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
     plt.legend()
     plt.title("Predicted vs. True Quaternion Components")
     if save_folder is not None:
-        plt.savefig(save_folder + 'quaternions.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'quaternions.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
     # Difference between predicted and true quaternions
@@ -211,7 +211,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
         plt.legend()
         plt.title("Difference Predicted vs. True Quaternion Components")
         if save_folder is not None:
-            plt.savefig(save_folder + 'quaternions_diff.png', dpi=300, bbox_inches='tight', pad_inches=0)
+            plt.savefig(save_folder + 'quaternions_diff.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
         plt.show()
 
     # 2x2 grid of scatter plots for each component of the quaternion
@@ -227,13 +227,13 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
         ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
         ax[1, 1].set_title(r'$q_3$')
         if save_folder is not None:
-            plt.savefig(save_folder + 'quaternions_scatter.png', dpi=300, bbox_inches='tight', pad_inches=0)
+            plt.savefig(save_folder + 'quaternions_scatter.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
         plt.show()
 
     timesteps = np.arange(quaternions_pred.shape[0])  # Time indices
 
     # Plot each quaternion component
-    fig, axes = plt.subplots(4, 1, figsize=(10, 8), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(8, 5), sharex=True)
 
     labels = ['w', 'x', 'y', 'z']
     for i in range(4):
@@ -245,39 +245,40 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None):
     axes[-1].set_xlabel("Time Step")
     plt.suptitle("Quaternion Components Over Time")
     if save_folder is not None:
-        plt.savefig(save_folder + 'quaternions_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
+        plt.savefig(save_folder + 'quaternions_over_time.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
 
     plt.show()
 
     # Convert to Euler angles (XYZ convention)
-    euler_pred = R.from_quat(quaternions_pred).as_euler('xyz', degrees=True)
-    if gt_q is not None:
-        euler_true = R.from_quat(gt_q[:len(quaternions_pred)]).as_euler('xyz', degrees=True)
+    #euler_pred = R.from_quat(quaternions_pred).as_euler('xyz', degrees=True)
+    #if gt_q is not None:
+    #    euler_true = R.from_quat(gt_q[:len(quaternions_pred)]).as_euler('xyz', degrees=True)
+
 
     # Unwrap to prevent discontinuities
-    euler_pred = np.unwrap(euler_pred, axis=0)
-    if gt_q is not None:
-        euler_true = np.unwrap(euler_true, axis=0)
+    #euler_pred = np.unwrap(euler_pred, axis=0)
+    #if gt_q is not None:
+    #    euler_true = np.unwrap(euler_true, axis=0)
 
     # Time indices
-    timesteps = np.arange(quaternions_pred.shape[0])
+    #timesteps = np.arange(quaternions_pred.shape[0])
 
     # Plot each Euler component
-    fig, axes = plt.subplots(3, 1, figsize=(10, 6), sharex=True)
-    labels = ['Roll (X)', 'Pitch (Y)', 'Yaw (Z)']
+    #fig, axes = plt.subplots(3, 1, figsize=(10, 6), sharex=True)
+    #labels = ['Roll (X)', 'Pitch (Y)', 'Yaw (Z)']
 
-    for i in range(3):
-        axes[i].plot(timesteps, euler_pred[:, i], label='Predicted', linestyle='--', alpha=0.7)
-        if gt_q is not None:
-            axes[i].plot(timesteps, euler_true[:, i], label='Ground Truth', alpha=0.9)
-        axes[i].set_ylabel(labels[i])
-        axes[i].legend()
+    #for i in range(3):
+    #    axes[i].plot(timesteps, euler_pred[:, i], label='Predicted', linestyle='--', alpha=0.7)
+    #    if gt_q is not None:
+    #        axes[i].plot(timesteps, euler_true[:, i], label='Ground Truth', alpha=0.9)
+    #    axes[i].set_ylabel(labels[i])
+    #    axes[i].legend()
 
-    axes[-1].set_xlabel("Time Step")
-    plt.suptitle("Quaternion to Euler Trajectories (Fixed Discontinuities)")
-    if save_folder is not None:
-        plt.savefig(save_folder + 'euler_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    #axes[-1].set_xlabel("Time Step")
+    #plt.suptitle("Quaternion to Euler Trajectories (Fixed Discontinuities)")
+    #if save_folder is not None:
+    #    plt.savefig(save_folder + 'euler_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
+    #plt.show()
 
 
     # 3D plot of the predicted object
