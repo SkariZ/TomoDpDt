@@ -33,7 +33,7 @@ def plot_latent_space(z, save_folder=None, dpi=200):
     # Set labels
     ax.set_xlabel('z1')
     ax.set_ylabel('z2')
-    axes[0].set_zlabel('Frame No.')
+    ax.set_zlabel('Frame No.')
     
     plt.tight_layout()
     
