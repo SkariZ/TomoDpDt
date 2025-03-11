@@ -4,7 +4,16 @@ import torch
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
-def plot_latent_space(z, save_folder=None, dpi=300):
+def plot_latent_space(z, save_folder=None, dpi=200):
+    """
+    Plots the latent space in 2D and 3D.
+
+    Parameters:
+    z (numpy array): Latent space array.
+    save_folder (str, optional): Path to save the plot. Defaults to None.
+    dpi (int, optional): Resolution of the saved figure. Defaults to 100.
+    """
+
     fig, axes = plt.subplots(1, 2, figsize=(10, 4))
     
     # 2D plot
@@ -24,11 +33,107 @@ def plot_latent_space(z, save_folder=None, dpi=300):
     # Set labels
     ax.set_xlabel('z1')
     ax.set_ylabel('z2')
+    axes[0].set_zlabel('Frame No.')
     
     plt.tight_layout()
     
     if save_folder is not None:
         plt.savefig(save_folder + 'latent_space_combined.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    
+    plt.show()
+
+def plot_reconstructed_vs_gt(recon_pred, recon_gt, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"], save_folder=None, dpi=200):
+    """
+    Plots reconstructed and ground truth frames side by side.
+
+    Parameters:
+    recon_pred (numpy array): Reconstructed frames.
+    recon_gt (numpy array): Ground truth frames.
+    save_name (str, optional): Name of the saved plot. Defaults to 'recon_vs_gt'.
+    column_headers (list, optional): Labels for the columns. Defaults to ["Reconstructed", "Ground Truth"].
+    save_folder (str, optional): Path to save the plot. Defaults to None.
+    dpi (int, optional): Resolution of the saved figure. Defaults to 100.
+    """
+
+    fig, ax = plt.subplots(3, 6, figsize=(12, 6))  # 3 rows, 6 columns
+    plt.suptitle(f"{column_headers[0]} vs {column_headers[1]} Frames", fontsize=14)
+
+    # Add column headers
+    for j, label in zip([1, 4], column_headers):
+        ax[0, j].set_title(label, fontsize=16, fontweight="bold")
+
+    for i in range(3):
+        for j in range(3):
+            # Reconstructed frames (Left 3 columns)
+            ax[i, j].imshow(recon_pred[i * 3 + j, 0], cmap="gray")
+            ax[i, j].set_title(f'Recon {i * 3 + j}')
+            ax[i, j].axvline(x=recon_pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+            ax[i, j].axis('off')
+
+            # Ground truth frames (Right 3 columns)
+            ax[i, j + 3].imshow(recon_gt[i * 3 + j, 0], cmap="gray")
+            ax[i, j + 3].set_title(f'GT {i * 3 + j}')
+            ax[i, j + 3].axvline(x=recon_gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+            ax[i, j + 3].axis('off')
+
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.show()
+
+def plot_sinogram(frames, slice_n=None, save_name="sinogram", save_folder=None, dpi=100):
+    """
+    Plots the sinogram of a series of frames.
+
+    Parameters:
+    frames (numpy array): 2D array representing the frames (n_frames, xsize, ysize, channel).
+    slice_axis (str, optional): Axis along which to slice the object. Defaults to 'x'.
+    slice (int, optional): Index of the slice along the specified axis. Defaults to None.
+    save_name (str, optional): Name of the saved plot. Defaults to "sinogram".
+    save_folder (str, optional): Path to save the plot. Defaults to None.
+    dpi (int, optional): Resolution of the saved figure. Defaults to 100.
+    """
+
+    if slice_n is None:
+        slice_n = frames.shape[1] // 2
+
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+    plt.suptitle(save_name)
+
+    # Plot sinogram along x and y axes
+    ax[0].set_title("Sinogram along x-axis")
+    ax[0].imshow(frames[:, slice_n, :, 0].T, cmap='gray', aspect='auto')
+    ax[1].set_title("Sinogram along y-axis")
+    ax[1].imshow(frames[:, :, slice_n, 0].T, cmap='gray', aspect='auto')
+
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+
+def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
+    """
+    Plots the sum projections of a predicted object along different axes.
+
+    Parameters:
+    object (numpy array): 3D array representing the predicted object.
+    save_name (str, optional): Name of the saved plot. Defaults to "object".
+    save_folder (str, optional): Path to save the plot. Defaults to None.
+    dpi (int, optional): Resolution of the saved figure. Defaults to 100.
+    """
+    fig, ax = plt.subplots(1, 3, figsize=(10, 3))
+    plt.suptitle(f"Summation views of {save_name}")
+
+    # Plot sum projections along different axes
+    ax[0].set_title("Sum along x-axis")
+    im = ax[0].imshow(object.sum(0))
+    ax[1].set_title("Sum along y-axis")
+    ax[1].imshow(object.sum(1))
+    ax[2].set_title("Sum along z-axis")
+    ax[2].imshow(object.sum(2))
+
+    # Add a colorbar
+    fig.colorbar(im, ax=ax)
+
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     
     plt.show()
 
@@ -50,7 +155,7 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
 
     # **Plot 1: Smoothed Distances (Narrow)**
     ax0 = plt.subplot(gs[0])
-    ax0.plot(smoothed_dists, label="Smoothed Distance")
+    ax0.plot(smoothed_dists)
     ax0.scatter(peaks, smoothed_dists[peaks], c='r', label="Peaks")
     ax0.set_title("Smoothed Distances and Peaks")
     ax0.set_xlabel("Time Step")
@@ -87,32 +192,8 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
     recon_vae_gt = tomo.frames[:9].cpu()
 
-    fig, ax = plt.subplots(3, 6, figsize=(12, 6))  # 3 rows, 6 columns
-    plt.suptitle("Reconstructed vs Ground Truth Frames", fontsize=14)
-
-    # Add column headers
-    for j, label in zip([1, 4], ["Reconstructed", "Ground Truth"]):
-        ax[0, j].set_title(label, fontsize=16, fontweight="bold")
-
-    for i in range(3):
-        for j in range(3):
-            # Reconstructed frames (Left 3 columns)
-            ax[i, j].imshow(recon_vae_pred[i * 3 + j, 0], cmap="gray")
-            ax[i, j].set_title(f'Recon {i * 3 + j}')
-            # Add a red  thin line in the middle
-            ax[i, j].axvline(x=recon_vae_pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
-            ax[i, j].axis('off')
-
-            # Ground truth frames (Right 3 columns)
-            ax[i, j + 3].imshow(recon_vae_gt[i * 3 + j, 0], cmap="gray")
-            ax[i, j + 3].set_title(f'GT {i * 3 + j}')
-            # Add a red thin line in the middle
-            ax[i, j + 3].axvline(x=recon_vae_gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
-            ax[i, j + 3].axis('off')
-
-    if save_folder is not None:
-        plt.savefig(save_folder + 'recon_vs_gt.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    # Plot the reconstructed vs ground truth frames
+    plot_reconstructed_vs_gt(recon_vae_pred, recon_vae_gt, save_name='recon_vs_gt_initial', save_folder=save_folder, dpi=dpi)
 
 
 def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
@@ -123,61 +204,13 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
     quaternions_pred = tomo.get_quaternions_final().detach().cpu().numpy()
     
     # Plot the Predicted_objects axes
-    fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-    plt.suptitle("Predicted object")
-    ax[0].set_title("Sum along x-axis")
-    ax[0].imshow(predicted_object.sum(0))
-    ax[1].set_title("Sum along y-axis")
-    ax[1].imshow(predicted_object.sum(1))
-    ax[2].set_title("Sum along z-axis")
-    ax[2].imshow(predicted_object.sum(2))
-    # Add a colorbar
-    im = ax[0].imshow(predicted_object.sum(0))
-    fig.colorbar(im, ax=ax)
-    if save_folder is not None:
-        plt.savefig(save_folder + 'predicted_object.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
-
+    plot_sum_object(predicted_object.numpy(), save_name="predicted_object", save_folder=save_folder, dpi=dpi)
+    
     if gt_v is not None:
-        fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-        plt.suptitle("Ground truth object")
-        ax[0].set_title("Sum along x-axis")
-        ax[0].imshow(gt_v.sum(0))
-        ax[1].set_title("Sum along y-axis")
-        ax[1].imshow(gt_v.sum(1))
-        ax[2].set_title("Sum along z-axis")
-        ax[2].imshow(gt_v.sum(2))
-
-        # Add a colorbar
-        im = ax[0].imshow(gt_v.sum(0))
-        fig.colorbar(im, ax=ax)
-        if save_folder is not None:
-            plt.savefig(save_folder + 'gt_object.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-        plt.show()
+        plot_sum_object(gt_v.numpy(), save_name="gt_object", save_folder=save_folder, dpi=dpi)
 
     # Plot the projections
-    R_idx = np.random.randint(0, projections_pred.shape[0], 9)
-    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
-    plt.suptitle("Predicted projections")
-    for i in range(3):
-        for j in range(3):
-            im = ax[i, j].imshow(projections_pred[R_idx[i * 3 + j], 0])
-            fig.colorbar(im, ax=ax[i, j])
-
-    if save_folder is not None:
-        plt.savefig(save_folder + 'predicted_projections.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
-
-    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
-    plt.suptitle("Ground truth projections")
-    for i in range(3):
-        for j in range(3):
-            im = ax[i, j].imshow(projections_gt[R_idx[i * 3 + j], 0])
-            fig.colorbar(im, ax=ax[i, j])
-    
-    if save_folder is not None:
-        plt.savefig(save_folder + 'gt_projections.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-    plt.show()
+    plot_reconstructed_vs_gt(projections_pred, projections_gt, save_name='projections', column_headers=["Predicted", "Ground Truth"], save_folder=save_folder, dpi=dpi)
 
     # Plot the quaternions
     plt.figure(figsize=(7, 4))
@@ -291,7 +324,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
         visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, pad_remove=4, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 
@@ -306,6 +339,10 @@ def visualize_3d_volume(volume, save_folder=None, sigma=0.8, surface_count=15, o
     import plotly.graph_objects as go
     from scipy import ndimage
 
+    if pad_remove > 0:
+        # Pad the volume with zeros to avoid clipping the isosurface at the edges
+        volume = volume[pad_remove:-pad_remove, pad_remove:-pad_remove, pad_remove:-pad_remove]
+
     # Generate the x, y, and z coordinate grids for the volume
     x = np.arange(volume.shape[0]).repeat(volume.shape[1] * volume.shape[2])  # Repeats each x-value across the grid
     y = np.tile(np.arange(volume.shape[1]).repeat(volume.shape[2]), volume.shape[0])  # Repeats each y-value within z slices
@@ -313,6 +350,8 @@ def visualize_3d_volume(volume, save_folder=None, sigma=0.8, surface_count=15, o
 
     # Gaussian smoothing for better visualization
     volume = ndimage.gaussian_filter(volume, sigma=sigma)
+
+    # Find background pixels. 
 
     # Determine dynamic isosurface bounds based on the volume
     isomin = volume.min() + 0.1 * (volume.max() - volume.min())
