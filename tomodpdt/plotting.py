@@ -423,6 +423,9 @@ def visualize_3d_volume(volume, pad_remove=4, save_folder=None, sigma=0.8, surfa
         margin=dict(l=0, r=0, b=0, t=0)  # Reduce the margins around the plot
     )
 
+    # Make the image overall smaller
+    fig.update_layout(width=500, height=500)
+
     fig.show()
 
     if save_folder is not None:
