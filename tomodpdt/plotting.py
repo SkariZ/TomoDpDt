@@ -1,4 +1,5 @@
 import matplotlib.pyplot as plt
+import matplotlib.gridspec as gridspec
 import numpy as np
 import torch
 from mpl_toolkits.mplot3d import Axes3D
@@ -137,6 +138,49 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     
     plt.show()
 
+def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=100):
+    """
+    Plots quaternion components over frames.
+
+    Parameters:
+    quaternions (numpy array): 2D array representing the quaternion components over frames.
+    """
+    plt.figure(figsize=(8, 4))
+    plt.plot(quaternions[:, 0].cpu(), label=r'$q_0$', linewidth=2)
+    plt.plot(quaternions[:, 1].cpu(), label=r'$q_1$', linewidth=2)
+    plt.plot(quaternions[:, 2].cpu(), label=r'$q_2$', linewidth=2)
+    plt.plot(quaternions[:, 3].cpu(), label=r'$q_3$', linewidth=2)
+    
+    plt.legend()
+    plt.xlabel('Frame')
+    plt.ylabel('Quaternion')
+    plt.title('Quaternions over time')
+    
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    
+    plt.show()
+
+def plot_grid33_frames(projections, title='frames', save_name='frames_grid', save_folder=None, dpi=100):
+    """
+    Plots a 3x3 grid of frames.
+
+    Parameters:
+    projections (numpy array or torch.Tensor): Array containing frame projections.
+    """
+    fig, ax = plt.subplots(3, 3, figsize=(6, 6))
+    plt.suptitle(title)
+    
+    for i in range(3):
+        for j in range(3):
+            ax[i, j].imshow(projections[i * 3 + j, 0], cmap='gray')
+            ax[i, j].set_title(f'Frame {i * 3 + j}')
+            ax[i, j].axis('off')
+    
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+    plt.show()
+
 def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     
     z = tomo.latent.detach().cpu().numpy()
@@ -147,8 +191,6 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     # Plot the smoothed distances and peaks
     smoothed_dists = tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
     peaks = tomo.rotation_initial_dict['peaks'].cpu().numpy()
-
-    import matplotlib.gridspec as gridspec
 
     fig = plt.figure(figsize=(12, 4))
     gs = gridspec.GridSpec(1, 2, width_ratios=[1, 2])  # 1:2 ratio
@@ -239,8 +281,6 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
         plt.plot(diff[:, 1], label=r'$q_1$', linewidth=2)
         plt.plot(diff[:, 2], label=r'$q_2$', linewidth=2)
         plt.plot(diff[:, 3], label=r'$q_3$', linewidth=2)
-        #Add aline at 0
-        plt.axhline(y=0, color='black', linestyle='--', linewidth=3)
         plt.legend()
         plt.title("Difference Predicted vs. True Quaternion Components")
         if save_folder is not None:
@@ -251,13 +291,13 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
     if gt_q is not None:
         fig, ax = plt.subplots(2, 2, figsize=(6, 6))
         fig.suptitle("Scatter plots of predicted vs. true quaternion components")
-        ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0])
+        ax[0, 0].scatter(quaternions_pred[:, 0], gt_q[:len(quaternions_pred), 0], color='darkblue', alpha=0.8)
         ax[0, 0].set_title(r'$q_0$')
-        ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1])
+        ax[0, 1].scatter(quaternions_pred[:, 1], gt_q[:len(quaternions_pred), 1], color='darkblue', alpha=0.8)
         ax[0, 1].set_title(r'$q_1$')
-        ax[1, 0].scatter(quaternions_pred[:, 2], gt_q[:len(quaternions_pred), 2])
+        ax[1, 0].scatter(quaternions_pred[:, 2], gt_q[:len(quaternions_pred), 2], color='darkblue', alpha=0.8)
         ax[1, 0].set_title(r'$q_2$')
-        ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3])
+        ax[1, 1].scatter(quaternions_pred[:, 3], gt_q[:len(quaternions_pred), 3], color='darkblue', alpha=0.8)
         ax[1, 1].set_title(r'$q_3$')
         if save_folder is not None:
             plt.savefig(save_folder + 'quaternions_scatter.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
@@ -350,8 +390,6 @@ def visualize_3d_volume(volume, pad_remove=4, save_folder=None, sigma=0.8, surfa
 
     # Gaussian smoothing for better visualization
     volume = ndimage.gaussian_filter(volume, sigma=sigma)
-
-    # Find background pixels. 
 
     # Determine dynamic isosurface bounds based on the volume
     isomin = volume.min() + 0.1 * (volume.max() - volume.min())

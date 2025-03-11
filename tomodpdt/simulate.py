@@ -75,6 +75,8 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
     # Create an imaging modality
     if isinstance(image_modality, torch.nn.Module):
         imaging_model = image_modality
+        if imaging_model.microscopy_regime == 'brightfield' and imaging_model.optics['return_field'] == True:
+            ch = 2
 
     elif image_modality == 'sum_projection':
         imaging_model = IMT.Sum3d2d(dim=-1)
@@ -125,11 +127,11 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
         if imaging_model.microscopy_regime == 'sum_projection' or imaging_model.microscopy_regime == 'sum_projection_avg_weighted':
             projections[i, 0] = image.cpu().squeeze()
 
-        if imaging_model.microscopy_regime in ['brightfield'] and ch == 2:
+        elif imaging_model.microscopy_regime in ['brightfield'] and ch == 2:
             projections[i, 0] = image.real.cpu().squeeze()
             projections[i, 1] = image.imag.cpu().squeeze()
 
-        if imaging_model.microscopy_regime in ['darkfield', 'iscat', 'fluorescence']:
+        elif imaging_model.microscopy_regime in ['darkfield', 'iscat', 'fluorescence', 'brightfield'] and ch == 1:
             projections[i, 0] = image.cpu().squeeze().real
     
     return object, quaternions, projections, imaging_model

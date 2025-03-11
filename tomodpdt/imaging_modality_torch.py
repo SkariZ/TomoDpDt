@@ -214,7 +214,7 @@ class SumAvgWeighted3d2d(nn.Module):
         self.weight_along_dim = torch.linspace(1, 0, x.size()[self.dim]).to(x.device)
         w_object = x * self.weight_along_dim
         return w_object.sum(dim=self.dim, keepdim=True)
-
+    
 
 if __name__ == "__main__":
 
