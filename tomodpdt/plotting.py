@@ -43,6 +43,7 @@ def plot_latent_space(z, save_folder=None, dpi=200):
     
     plt.show()
 
+
 def plot_reconstructed_vs_gt(recon_pred, recon_gt, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"], save_folder=None, dpi=200):
     """
     Plots reconstructed and ground truth frames side by side.
@@ -81,6 +82,7 @@ def plot_reconstructed_vs_gt(recon_pred, recon_gt, save_name='recon_vs_gt', colu
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
 
+
 def plot_sinogram(frames, slice_n=None, save_name="sinogram", save_folder=None, dpi=100):
     """
     Plots the sinogram of a series of frames.
@@ -108,6 +110,7 @@ def plot_sinogram(frames, slice_n=None, save_name="sinogram", save_folder=None, 
 
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+
 
 def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     """
@@ -138,6 +141,7 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     
     plt.show()
 
+
 def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=100):
     """
     Plots quaternion components over frames.
@@ -161,6 +165,7 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     
     plt.show()
 
+
 def plot_grid33_frames(projections, title='frames', save_name='frames_grid', save_folder=None, dpi=100):
     """
     Plots a 3x3 grid of frames.
@@ -180,6 +185,7 @@ def plot_grid33_frames(projections, title='frames', save_name='frames_grid', sav
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     plt.show()
+
 
 def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     
@@ -238,7 +244,7 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
     plot_reconstructed_vs_gt(recon_vae_pred, recon_vae_gt, save_name='recon_vs_gt_initial', save_folder=save_folder, dpi=dpi)
 
 
-def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
+def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=True):
     
     predicted_object = tomo.volume.detach().cpu()
     projections_pred = tomo.full_forward_final().detach().cpu().numpy()
@@ -353,18 +359,16 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250):
     #    plt.savefig(save_folder + 'euler_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
     #plt.show()
 
+    if plot_3d:
+        # 3D plot of the predicted object
+        visualize_3d_volume(predicted_object.numpy(), save_folder=save_folder)
 
-    # 3D plot of the predicted object
-    visualize_3d_volume(predicted_object.numpy(), save_folder=save_folder)
-
-    
-
-    # 3D plot of the ground truth object
-    if gt_v is not None:
-        visualize_3d_volume(gt_v.numpy())
+        # 3D plot of the ground truth object
+        if gt_v is not None:
+            visualize_3d_volume(gt_v.numpy())
 
 
-def visualize_3d_volume(volume, pad_remove=4, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+def visualize_3d_volume(volume, pad_remove=2, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 

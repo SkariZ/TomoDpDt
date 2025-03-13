@@ -2,6 +2,9 @@ import torch
 import numpy as np
 from scipy.signal import savgol_filter
 import scipy.signal as signal
+from scipy.linalg import svd
+import cv2
+
 
 def process_latent_space(
     z,
@@ -16,6 +19,7 @@ def process_latent_space(
     prominence=0.5,
     height_factor=0.775,
     basis_functions=12,
+    intial_axes_case='cv2_flow',
     **kwargs
 ):
     """
@@ -48,14 +52,20 @@ def process_latent_space(
         frames = torch.tensor(frames)
 
     if initial_axes is None:
-        # Estimate the initial axis by looking at the std in the frames along x and y
-        std_x = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 2)).sum()
-        std_y = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 3)).sum()
 
-        if std_x > std_y:
-            initial_axes = 'x'
+        if intial_axes_case == 'cv2_flow':
+            # Compute optical flow between frames
+            flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
+            initial_axes = classify_rotation_axis(flow_vectors)
         else:
-            initial_axes = 'y'
+            # Estimate the initial axis by looking at the std in the frames along x and y
+            std_x = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 2)).sum()
+            std_y = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 3)).sum()
+
+            if std_x > std_y:
+                initial_axes = 'x'
+            else:
+                initial_axes = 'y'
 
     # Return device
     device = z.device
@@ -184,6 +194,49 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prom
         peaks = np.append(peaks, len(res)-1)
 
     return peaks
+
+
+def compute_optical_flow(frames):
+    """
+    Computes dense optical flow between consecutive frames.
+    :param frames: NumPy array of shape (T, 64, 64) with values in range [0,1].
+    :return: Motion vectors (dx, dy) for sampled points.
+    """
+    T, H, W = frames.shape
+    flow_vectors = []
+
+    for t in range(T - 1):
+        prev_gray = (frames[t] * 255).astype(np.uint8)  # Convert to 0-255 uint8
+        next_gray = (frames[t + 1] * 255).astype(np.uint8)
+
+        # Compute dense optical flow
+        flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+
+        # Sample motion vectors at every 4 pixels
+        y, x = np.mgrid[0:H:4, 0:W:4].reshape(2, -1).astype(int)
+        dx, dy = flow[y, x].T
+        points = np.column_stack([x, y, dx, dy])
+        flow_vectors.append(points)
+
+    return np.vstack(flow_vectors)
+
+
+def classify_rotation_axis(flow_vectors):
+    """
+    Uses PCA to classify whether the main axis of rotation is along X or Y.
+    Returns 'X' if horizontal, 'Y' if vertical.
+    """
+    displacements = flow_vectors[:, 2:]  # (dx, dy)
+
+    # PCA using Singular Value Decomposition (SVD)
+    _, _, Vt = svd(displacements, full_matrices=False)
+    principal_axis = Vt[0]  # First principal component
+
+    # Classify based on the dominant motion direction
+    if abs(principal_axis[0]) > abs(principal_axis[1]):
+        return "x"  # Horizontal rotation
+    else:
+        return "y"  # Vertical rotation
 
 
 # Example usage

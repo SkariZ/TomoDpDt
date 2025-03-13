@@ -141,7 +141,7 @@ class Tomography(dl.Application):
 
         # Train the VAE model if not already trained
         if self.vae_model.training:
-            self.train_vae(projections)
+            self.train_vae(projections, **kwargs)
 
         # Compute the latent space
         latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
@@ -203,10 +203,15 @@ class Tomography(dl.Application):
             projections[:, i] = projections[:, i] * (self.global_max[i] - self.global_min[i] + 1e-6) + self.global_min[i]
         return projections
     
-    def train_vae(self, projections):
+    def train_vae(self, projections, **kwargs):
         """
         Train the VAE model on the given projections.
         """
+
+        if 'max_epochs' in kwargs:
+            max_epochs = kwargs['max_epochs']
+        else:
+            max_epochs = 500
 
         # Data loader for the VAE model x=projections and y=projections
         data_loader = DataLoader(
@@ -217,7 +222,7 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=250, accelerator="auto")
+        trainer = dl.Trainer(max_epochs=max_epochs, accelerator="auto")
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
@@ -568,7 +573,7 @@ class Tomography(dl.Application):
         rotated_grid = (rotated_grid / (self.N / 2)).clamp(-1, 1)
         
         # Apply grid_sample to rotate the volume
-        rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
+        rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True, mode='bilinear')
         return rotated_volume.squeeze()
 
     def quaternion_to_rotation_matrix_batch(self, q):

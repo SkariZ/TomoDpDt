@@ -13,6 +13,7 @@ RI_RANGE = (1.33, 1.42)
 np.random.seed(123)
 torch.manual_seed(123)
 
+
 def generate_3d_volume(size, num_layers, layer_densities):
     # Ensure that the number of densities matches the number of layers
     if len(layer_densities) != num_layers:
