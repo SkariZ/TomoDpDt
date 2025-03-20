@@ -55,6 +55,7 @@ def setup_optics(
             output_region=(0, 0, nsize, nsize),
             return_field=return_field
         )
+
     elif microscopy_regime == 'fluorescence':
         optics = dt.Fluorescence(
             NA=NA,
@@ -64,6 +65,8 @@ def setup_optics(
             output_region=(0, 0, nsize, nsize),
             # return_field=return_field
         )
+        return_field = False
+
     elif microscopy_regime == 'darkfield':
         optics = dt.Darkfield(
             NA=NA,
@@ -71,8 +74,10 @@ def setup_optics(
             resolution=resolution,
             magnification=magnification,
             output_region=(0, 0, nsize, nsize),
-            #return_field=return_field
+            # return_field=return_field
         )
+        return_field = False
+
     elif microscopy_regime == 'iscat':
         optics = dt.ISCAT(
             NA=NA,
@@ -105,7 +110,7 @@ def setup_optics(
         "limits": limits,
         "fields": fields,
         "filtered_properties": filtered_properties,
-        "padding_xy": padding_xy
+        "padding_xy": padding_xy,
         }
 
 

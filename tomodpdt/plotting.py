@@ -5,6 +5,7 @@ import torch
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
+
 def plot_latent_space(z, save_folder=None, dpi=200):
     """
     Plots the latent space in 2D and 3D.
@@ -149,7 +150,7 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     Parameters:
     quaternions (numpy array): 2D array representing the quaternion components over frames.
     """
-    plt.figure(figsize=(8, 4))
+    plt.figure(figsize=(7, 4))
     plt.plot(quaternions[:, 0].cpu(), label=r'$q_0$', linewidth=2)
     plt.plot(quaternions[:, 1].cpu(), label=r'$q_1$', linewidth=2)
     plt.plot(quaternions[:, 2].cpu(), label=r'$q_2$', linewidth=2)
@@ -312,7 +313,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=T
     timesteps = np.arange(quaternions_pred.shape[0])  # Time indices
 
     # Plot each quaternion component
-    fig, axes = plt.subplots(4, 1, figsize=(8, 5), sharex=True)
+    fig, axes = plt.subplots(4, 1, figsize=(7, 4), sharex=True)
 
     labels = ['w', 'x', 'y', 'z']
     for i in range(4):

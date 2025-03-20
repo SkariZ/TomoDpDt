@@ -391,8 +391,8 @@ class Tomography(dl.Application):
         else:
             q0_loss = torch.tensor(0.0, device=self._device)
 
-        # Compute the rotational trajectory regularization term if the indices are consecutive
-        if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1:
+        # Compute the rotational trajectory regularization term if the indices are consecutive and optimization case is 'quaternion' and not 'basis'
+        if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1 and self.rotation_optim_case == 'quaternion':
             rtr_loss = self.rotational_trajectory_regularization(
                 quaternions_pred
                 )
@@ -480,29 +480,27 @@ class Tomography(dl.Application):
 
     def rotational_trajectory_regularization(self, q):
         """
-        Calculate the rotational trajectory regularization term.
+        Faster rotational trajectory regularization term.
         
         Args:
-        - q (torch.Tensor): A tensor of shape (T, d) where T is the number of time steps and d is the dimensionality of q.
+        - q (torch.Tensor): Tensor of shape (T, d)
+        
         Returns:
-        - R_q (float): The rotational trajectory regularization term.
+        - reg_terms (float): Regularization value
         """
+        # Compute first and second-order differences directly
+        first_diff = torch.diff(q, dim=0)  # Shape: (T-1, d)
+        second_diff = torch.diff(first_diff, dim=0)  # Shape: (T-2, d)
 
-        # First-order difference (consecutive quaternion differences)
-        first_diff = q[1:] - q[:-1]
+        # Compute squared norms (avoid .norm() call for speed)
+        first_order_loss = torch.sum(first_diff ** 2, dim=1)  # (T-1,)
+        second_order_loss = torch.sum(second_diff ** 2, dim=1)  # (T-2,)
 
-        # Second-order difference (smoothness penalty)
-        second_diff = first_diff[1:] - first_diff[:-1]
-
-        # Compute the loss
-        first_order_loss = first_diff.norm(p=2, dim=1)**2  # Penalize large jumps
-        second_order_loss = second_diff.norm(p=2, dim=1)**2  # Penalize abrupt changes in the rate of change
-
-        # Combine first-order and second-order terms
-        reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.shape[0]
+        # Combine and normalize
+        reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.size(0)
 
         return reg_terms
-    
+
     def sinogram_loss(self, sinogram, sinogram_pred):
         """
         Compute the loss between the true and predicted sinograms.

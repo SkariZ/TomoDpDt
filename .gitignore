@@ -8,6 +8,11 @@ __pycache__/
 *.pyd
 # Ignore .pyz files
 *.pyz
+# Ignore .pyw files
+*.pyw
+# Ignore .npz files
+*.npz
+
 # Lightninig logs
 logs/
 lightning_logs/

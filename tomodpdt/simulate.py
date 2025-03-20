@@ -71,12 +71,9 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
     else:
         raise ValueError('Unknown rotation case')
 
-    ch = 1
     # Create an imaging modality
     if isinstance(image_modality, torch.nn.Module):
         imaging_model = image_modality
-        if imaging_model.microscopy_regime == 'brightfield' and imaging_model.optics['return_field'] == True:
-            ch = 2
 
     elif image_modality == 'sum_projection':
         imaging_model = IMT.Sum3d2d(dim=-1)
@@ -103,6 +100,11 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
     else:
         raise ValueError('Unknown imaging modality')
     
+    # Number of channels
+    ch = 1
+    if imaging_model.microscopy_regime == 'brightfield' and imaging_model.filtered_properties['return_field'] == True:
+        ch = 2
+
     # Create a rotation model for the object
     rotmod = FM.ForwardModelSimple(N=SIZE)
 
@@ -137,7 +139,7 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
     return object, quaternions, projections, imaging_model
 
 
-if __name__=='__main__':
+if __name__ == '__main__':
 
     object, quaternions, projections, imaging_model = create_data(
         image_modality='darkfield', 
