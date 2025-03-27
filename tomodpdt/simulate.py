@@ -26,8 +26,6 @@ VOL_RANDOM = V.VOL_RANDOM
 
 # Settings
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
-SIZE = 64  # Size of the 3D object
-
 
 def create_data(volume=None, volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, duration=2, rotation_case='sinusoidal'):
     """
@@ -54,6 +52,8 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
         object = torch.tensor(VOL_RANDOM, dtype=torch.float32, device=DEV)
     else:
         raise ValueError('Unknown volume case')
+
+    size = object.shape[0]
 
     # Create quaternions
     if rotation_case == 'noisy_sinusoidal':
@@ -82,20 +82,20 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
         imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
 
     elif image_modality == 'brightfield':
-        optics = IMT.setup_optics(SIZE, microscopy_regime='Brightfield')
+        optics = IMT.setup_optics(size, microscopy_regime='Brightfield')
         imaging_model = IMT.imaging_model(optics)
         ch = 2
 
     elif image_modality == 'darkfield':
-        optics = IMT.setup_optics(SIZE, microscopy_regime='Darkfield')
+        optics = IMT.setup_optics(size, microscopy_regime='Darkfield')
         imaging_model = IMT.imaging_model(optics)
 
     elif image_modality == 'iscat':
-        optics = IMT.setup_optics(SIZE, microscopy_regime='Iscat')
+        optics = IMT.setup_optics(size, microscopy_regime='Iscat')
         imaging_model = IMT.imaging_model(optics)
 
     elif image_modality == 'fluorescence':
-        optics = IMT.setup_optics(SIZE, microscopy_regime='Fluorescence')
+        optics = IMT.setup_optics(size, microscopy_regime='Fluorescence')
         imaging_model = IMT.imaging_model(optics)
     else:
         raise ValueError('Unknown imaging modality')
@@ -106,7 +106,7 @@ def create_data(volume=None, volume_case='gaussian_multiple', image_modality='su
         ch = 2
 
     # Create a rotation model for the object
-    rotmod = FM.ForwardModelSimple(N=SIZE)
+    rotmod = FM.ForwardModelSimple(N=size)
 
     # Dataset
     projections = torch.zeros((samples, ch, object.shape[1], object.shape[2]))

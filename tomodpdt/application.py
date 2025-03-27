@@ -123,7 +123,7 @@ class Tomography(dl.Application):
         # Set the number of channels
         self.CH = projections.shape[1]
 
-        if self.CH > 0:
+        if self.CH > 1:
             # Update the VAE model to handle multiple channels
             vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2)
             self.vae_model.encoder=vae.encoder
