@@ -26,9 +26,13 @@ class ConvVAE(nn.Module):
 
         self.encoder = self.build_encoder()
         
+        if len(self.conv_channels)!=3:
+            raise ValueError("conv_channels must have 3 elements, hardcoded for now...")
+
         #self.fc_mu = nn.Linear(self.flattened_size(), latent_dim)
         #self.fc_log_var = nn.Linear(self.flattened_size(), latent_dim)
         #self.fc_decode = nn.Linear(latent_dim, self.flattened_size())
+        
         self.flattened_size = self.get_flattened_size()
         self.H = self.calculate_H()
         self.decoder = self.build_decoder()
