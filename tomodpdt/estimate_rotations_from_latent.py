@@ -11,7 +11,8 @@ def process_latent_space(
     frames,
     initial_axes=None,
     quaternions=None,
-    peaks_period_range=[20, 100],
+    initial_frames_per_rotation=None,
+    peaks_period_range=None,
     window_length=11,
     polyorder=2,
     max_peaks=7,
@@ -26,55 +27,61 @@ def process_latent_space(
     Process the latent space to compute quaternions and peaks.
 
     Parameters:
-    - z (torch.Tensor): Latent space representation (N, 2).
-    - frames (torch.Tensor): Input frames.
-    - max_n_projections (int): Maximum number of frames to process.
-    - step_size (int): Step size for frame selection.
-    - normalize (bool): Whether to normalize frames.
-    - initial_axes (str): Axis for rotations ('x', 'y', 'z').
-    - quaternions (torch.Tensor): Initial quaternions.
+    - z (torch.Tensor): Latent space representation.
+    - frames (torch.Tensor): Frames to compute optical flow.
+    - initial_axes (str): Initial rotation axis ('x', 'y', 'z').
+    - quaternions (torch.Tensor): Precomputed quaternions.
+    - initial_frames_per_rotation (int): Initial estimate of frames per rotation.
     - peaks_period_range (list): Range for peak detection.
-    - window_length (int): Window length for smoothing.
-    - polyorder (int): Polynomial order for smoothing.
-    - max_peaks (int): Maximum allowed number of peaks.
-    - min_peaks (int): Minimum required number of peaks.
+    - window_length (int): Window length for Savitzky-Golay filter.
+    - polyorder (int): Polynomial order for Savitzky-Golay filter.
+    - max_peaks (int): Maximum number of peaks to detect.
+    - min_peaks (int): Minimum number of peaks to detect.
     - prominence (float): Prominence for peak detection.
     - height_factor (float): Height factor for peak detection.
     - basis_functions (int): Number of basis functions.
-    - kwargs: Additional keyword arguments.
-    
+    - intial_axes_case (str): Method to determine initial axes ('cv2_flow' or 'std').
+
     Returns:
-    - dict: Processed data containing quaternions, coefficients, basis functions, peaks, and smoothed distances.
+    - dict: Processed data with quaternions, coefficients, basis functions, peaks, and smoothed distances.
     """
 
-    # Ensure frames and latent space are tensors
     if not isinstance(frames, torch.Tensor):
         frames = torch.tensor(frames)
 
+    # Auto-determine initial axis if not given
     if initial_axes is None:
-
         if intial_axes_case == 'cv2_flow':
-            # Compute optical flow between frames
             flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
             initial_axes = classify_rotation_axis(flow_vectors)
         else:
-            # Estimate the initial axis by looking at the std in the frames along x and y
-            std_x = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 2)).sum()
-            std_y = torch.std(frames[1:]-frames[-1:], dim=(0, 1, 3)).sum()
+            std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
+            std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
+            initial_axes = 'x' if std_x > std_y else 'y'
 
-            if std_x > std_y:
-                initial_axes = 'x'
-            else:
-                initial_axes = 'y'
-
-    # Return device
     device = z.device
 
     # Compute distances and smooth them
     res = np.array(1 - compute_normalized_distances(z).cpu().numpy())
     res = res * np.linspace(0.95, 1, len(res))
     res = savgol_filter(res, window_length=window_length, polyorder=polyorder)
-    res /= max(res)  # Normalize
+    res /= max(res)
+
+    # Adjust peak detection parameters if an initial period estimate is given
+    if initial_frames_per_rotation is not None:
+        # Set peak search range around the expected period ±30%
+        low = int(initial_frames_per_rotation * 0.7)
+        high = int(initial_frames_per_rotation * 1.3)
+        peaks_period_range = [low, high]
+
+        # Ensure the range is within reasonable limits
+        expected_peaks = len(z) / initial_frames_per_rotation
+        min_peaks = max(2, int(expected_peaks * 0.6))
+        max_peaks = max(min_peaks + 1, int(expected_peaks * 1.4))
+    else:
+        # Default peak search range
+        if peaks_period_range is None:
+            peaks_period_range = [20, 100]
 
     # Detect peaks
     peaks = find_peaks(
