@@ -177,14 +177,16 @@ def compute_normalized_distances(z):
     return dists / dists.max()
 
 
-def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7, min_peaks=2, prominence=0.5, height_factor=0.775):
+def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
+               min_peaks=2, prominence=0.5, height_factor=0.775):
     """Find peaks in smoothed distance data."""
     height = height_factor * np.max(res)
     distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
 
     for dist in range(*distance_range):
         try:
-            peaks = signal.find_peaks(res, distance=dist, height=height, prominence=prominence)[0]
+            peaks = signal.find_peaks(res, distance=dist, height=height,
+                                      prominence=prominence)[0]
         except:
             peaks = []
             
@@ -213,11 +215,13 @@ def compute_optical_flow(frames):
     flow_vectors = []
 
     for t in range(T - 1):
-        prev_gray = (frames[t] * 255).astype(np.uint8)  # Convert to 0-255 uint8
+        prev_gray = (frames[t] * 255).astype(np.uint8)  # Convert to 0-255
         next_gray = (frames[t + 1] * 255).astype(np.uint8)
 
         # Compute dense optical flow
-        flow = cv2.calcOpticalFlowFarneback(prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0)
+        flow = cv2.calcOpticalFlowFarneback(
+            prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+            )
 
         # Sample motion vectors at every 4 pixels
         y, x = np.mgrid[0:H:4, 0:W:4].reshape(2, -1).astype(int)
