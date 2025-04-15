@@ -1,36 +1,30 @@
-import deeptrack as dt
 
 #from deeptrack import Brightfield as OriginalBrightfield
 #from deeptrack import Fluorescence as OriginalFluorescence
 #from deeptrack import Darkfield as OriginalDarkfield
 #from deeptrack import ISCAT as OriginalISCAT
 
+import deeptrack
+
 from deeptrack.optics import Optics as OriginalOptics
 
-
-from pint import Quantity
-from typing import Any, Dict, List, Tuple, Union
+from typing import Any, Dict, Union
 from deeptrack.backend.units import (
     ConversionTable,
-    create_context,
-    get_active_scale,
     get_active_voxel_size,
 )
 from deeptrack.math import AveragePooling
 from deeptrack.features import propagate_data_to_dependencies
 
-from deeptrack.features import DummyFeature, Feature, StructuralFeature
-from deeptrack.image import Image, pad_image_to_fft, maybe_cupy
-from deeptrack.types import ArrayLike, PropertyLike
-from deeptrack.backend._config import cupy
-from scipy.ndimage import convolve
-import warnings
+from deeptrack.features import Feature
+from deeptrack.image import Image, pad_image_to_fft
+from deeptrack.types import ArrayLike
 
 from deeptrack import units as u
-from deeptrack.backend import config
 
 import numpy as np
 import torch
+
 
 class Optics(OriginalOptics):
     """
