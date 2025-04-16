@@ -4,26 +4,87 @@
 #from deeptrack import Darkfield as OriginalDarkfield
 #from deeptrack import ISCAT as OriginalISCAT
 
-import deeptrack
 
 from deeptrack.optics import Optics as OriginalOptics
 
-from typing import Any, Dict, Union
+from typing import Any, Dict, Union, Iterable
 from deeptrack.backend.units import (
     ConversionTable,
     get_active_voxel_size,
 )
-from deeptrack.math import AveragePooling
-from deeptrack.features import propagate_data_to_dependencies
 
 from deeptrack.features import Feature
-from deeptrack.image import Image, pad_image_to_fft
+from deeptrack.image import Image
 from deeptrack.types import ArrayLike
 
 from deeptrack import units as u
 
 import numpy as np
 import torch
+
+
+_FASTEST_SIZES = [0]
+for n in range(1, 10):
+    _FASTEST_SIZES += [2 ** a * 3 ** (n - a - 1) for a in range(n)]
+_FASTEST_SIZES = np.sort(_FASTEST_SIZES)
+
+def pad_image_to_fft(
+    image: Union[torch.Tensor, np.ndarray],
+    axes: Iterable[int] = (0, 1),
+) -> Union[torch.Tensor, np.ndarray]:
+    """Pads an image to optimize Fast Fourier Transform (FFT) performance.
+
+    This function pads an image by adding zeros to the end of specified axes 
+    so that their lengths match the nearest larger size in `_FASTEST_SIZES`. 
+    These sizes are selected to optimize FFT computations.
+
+    Parameters
+    ----------
+    image : torch.Tensor or np.ndarray
+        The input image to pad. It should be a PyTorch tensor or a NumPy array.
+    axes : Iterable[int], optional
+        The axes along which to apply padding. Defaults to `(0, 1)`.
+
+    Returns
+    -------
+    torch.Tensor or np.ndarray
+        The padded image with dimensions optimized for FFT performance.
+
+    Raises
+    ------
+    ValueError
+        If no suitable size is found in `_FASTEST_SIZES` for any axis length.
+    """
+
+    def _closest(dim: int) -> int:
+        # Returns the smallest value from _FASTEST_SIZES larger than dim.
+        for size in _FASTEST_SIZES:
+            if size >= dim:
+                return size
+        raise ValueError(
+            f"No suitable size found in _FASTEST_SIZES={_FASTEST_SIZES} "
+            f"for dimension {dim}."
+        )
+
+    # Compute new shape by finding the closest size for specified axes.
+    new_shape = list(image.shape)
+    for axis in axes:
+        new_shape[axis] = _closest(new_shape[axis])
+
+    # Calculate the padding for each axis.
+    pad_width = []
+    for i, size in enumerate(new_shape):
+        increase = size - image.shape[i]
+        pad_width.append((0, increase))
+    
+    if isinstance(image, np.ndarray):
+        return np.pad(image, pad_width, mode="constant")
+    
+    # Flatten pad_width and apply padding using torch.nn.functional.pad
+    pad_width_flattened = [item for sublist in reversed(pad_width) for item in sublist]
+    padded_image = torch.nn.functional.pad(image, pad_width_flattened, mode="constant", value=0)
+    
+    return padded_image
 
 
 class Optics(OriginalOptics):
