@@ -167,7 +167,7 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     plt.show()
 
 
-def plot_grid33_frames(projections, title='frames', save_name='frames_grid', save_folder=None, dpi=100):
+def plot_grid33_frames(projections, title='frames', save_name='frames_grid', save_folder=None, dpi=100, randomize=False):
     """
     Plots a 3x3 grid of frames.
 
@@ -179,8 +179,12 @@ def plot_grid33_frames(projections, title='frames', save_name='frames_grid', sav
     
     for i in range(3):
         for j in range(3):
-            ax[i, j].imshow(projections[i * 3 + j, 0], cmap='gray')
-            ax[i, j].set_title(f'Frame {i * 3 + j}')
+            if randomize:
+                idx = np.random.randint(0, projections.shape[0])
+            else:
+                idx = i * 3 + j
+            ax[i, j].imshow(projections[idx, 0], cmap='gray')
+            ax[i, j].set_title(f'Frame {idx}')
             ax[i, j].axis('off')
     
     if save_folder is not None:
@@ -326,39 +330,7 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=T
     plt.suptitle("Quaternion Components Over Time")
     if save_folder is not None:
         plt.savefig(save_folder + 'quaternions_over_time.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
-
     plt.show()
-
-    # Convert to Euler angles (XYZ convention)
-    #euler_pred = R.from_quat(quaternions_pred).as_euler('xyz', degrees=True)
-    #if gt_q is not None:
-    #    euler_true = R.from_quat(gt_q[:len(quaternions_pred)]).as_euler('xyz', degrees=True)
-
-
-    # Unwrap to prevent discontinuities
-    #euler_pred = np.unwrap(euler_pred, axis=0)
-    #if gt_q is not None:
-    #    euler_true = np.unwrap(euler_true, axis=0)
-
-    # Time indices
-    #timesteps = np.arange(quaternions_pred.shape[0])
-
-    # Plot each Euler component
-    #fig, axes = plt.subplots(3, 1, figsize=(10, 6), sharex=True)
-    #labels = ['Roll (X)', 'Pitch (Y)', 'Yaw (Z)']
-
-    #for i in range(3):
-    #    axes[i].plot(timesteps, euler_pred[:, i], label='Predicted', linestyle='--', alpha=0.7)
-    #    if gt_q is not None:
-    #        axes[i].plot(timesteps, euler_true[:, i], label='Ground Truth', alpha=0.9)
-    #    axes[i].set_ylabel(labels[i])
-    #    axes[i].legend()
-
-    #axes[-1].set_xlabel("Time Step")
-    #plt.suptitle("Quaternion to Euler Trajectories (Fixed Discontinuities)")
-    #if save_folder is not None:
-    #    plt.savefig(save_folder + 'euler_over_time.png', dpi=300, bbox_inches='tight', pad_inches=0)
-    #plt.show()
 
     if plot_3d:
         # 3D plot of the predicted object
@@ -367,9 +339,222 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=T
         # 3D plot of the ground truth object
         if gt_v is not None:
             visualize_3d_volume(gt_v.numpy())
+            
+class TomoPlotter:
+    def __init__(self, tomo, save_folder=None, dpi=200):
+        self.tomo = tomo
+        self.save_folder = save_folder
+        self.dpi = dpi
 
+    def _save_fig(self, name):
+        if self.save_folder:
+            plt.savefig(f"{self.save_folder}{name}.png", dpi=self.dpi, bbox_inches='tight', pad_inches=0)
 
-def visualize_3d_volume(volume, pad_remove=2, save_folder=None, sigma=0.8, surface_count=15, opacity=0.5, bgcolor='black', camera_position=(1.25, 1.25, 1.25)):
+    def plot_latent_space(self):
+        z = self.tomo.latent.detach().cpu().numpy()
+        fig, axes = plt.subplots(1, 2, figsize=(10, 4))
+
+        axes[0].set_title("Latent space")
+        scatter = axes[0].scatter(z[:, 0], z[:, 1], c=np.arange(z.shape[0]))
+        axes[0].scatter(z[0, 0], z[0, 1], c='r')
+        fig.colorbar(scatter, ax=axes[0])
+        axes[0].set_xlabel('z1')
+        axes[0].set_ylabel('z2')
+
+        ax = fig.add_subplot(1, 2, 2, projection='3d')
+        ax.set_title("Latent space (3D)")
+        ax.scatter(z[:, 0], z[:, 1], np.arange(z.shape[0]))
+        ax.scatter(z[0, 0], z[0, 1], 0, c='r')
+        ax.set_xlabel('z1')
+        ax.set_ylabel('z2')
+        ax.set_zlabel('Frame No.')
+
+        plt.tight_layout()
+        self._save_fig('latent_space_combined')
+        plt.show()
+
+    def plot_reconstructed_vs_gt(self, pred=None, gt=None, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"]):
+        if pred is None:
+            pred = self.tomo.vae_model(self.tomo.frames[:9])[0].cpu()
+        if gt is None:
+            gt = self.tomo.frames[:9].cpu()
+
+        fig, ax = plt.subplots(3, 6, figsize=(12, 6))
+        plt.suptitle(f"{column_headers[0]} vs {column_headers[1]} Frames", fontsize=14)
+
+        for j, label in zip([1, 4], column_headers):
+            ax[0, j].set_title(label, fontsize=16, fontweight="bold")
+
+        for i in range(3):
+            for j in range(3):
+                ax[i, j].imshow(pred[i * 3 + j, 0], cmap="gray")
+                ax[i, j].set_title(f'Recon {i * 3 + j}')
+                ax[i, j].axvline(x=pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+                ax[i, j].axis('off')
+
+                ax[i, j + 3].imshow(gt[i * 3 + j, 0], cmap="gray")
+                ax[i, j + 3].set_title(f'GT {i * 3 + j}')
+                ax[i, j + 3].axvline(x=gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+                ax[i, j + 3].axis('off')
+
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_sum_object(self, obj=None, save_name="object"):
+        if obj is None:
+            obj = self.tomo.volume.detach().cpu().numpy()
+
+        fig, ax = plt.subplots(1, 3, figsize=(10, 3))
+        plt.suptitle(f"Summation views of {save_name}")
+
+        im = ax[0].imshow(obj.sum(0))
+        ax[0].set_title("Sum along x-axis")
+        ax[1].imshow(obj.sum(1))
+        ax[1].set_title("Sum along y-axis")
+        ax[2].imshow(obj.sum(2))
+        ax[2].set_title("Sum along z-axis")
+
+        fig.colorbar(im, ax=ax)
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_sinogram(self, slice_n=None, save_name="sinogram"):
+        frames = self.tomo.frames.cpu().numpy()
+        if slice_n is None:
+            slice_n = frames.shape[1] // 2
+
+        fig, ax = plt.subplots(1, 2, figsize=(12, 4))
+        plt.suptitle(save_name)
+
+        ax[0].set_title("Sinogram along x-axis")
+        ax[0].imshow(frames[:, slice_n, :, 0].T, cmap='gray', aspect='auto')
+
+        ax[1].set_title("Sinogram along y-axis")
+        ax[1].imshow(frames[:, :, slice_n, 0].T, cmap='gray', aspect='auto')
+
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_quaternions(self, gt=None, save_name="quaternion"):
+        q = self.tomo.get_quaternions_final().cpu().numpy()
+        plt.figure(figsize=(7, 4))
+        for i in range(4):
+            plt.plot(q[:, i], label=fr'$q_{i}$', linewidth=2)
+        if gt is not None:
+            gt = gt.cpu().numpy()
+            for i in range(4):
+                plt.plot(gt[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
+        plt.legend()
+        plt.xlabel('Frame')
+        plt.ylabel('Quaternion')
+        plt.title('Quaternions over time')
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_grid33_frames(self, projections=None, title='frames', save_name='frames_grid', randomize=False):
+        if projections is None:
+            projections = self.tomo.frames.cpu().numpy()
+
+        fig, ax = plt.subplots(3, 3, figsize=(6, 6))
+        plt.suptitle(title)
+
+        for i in range(3):
+            for j in range(3):
+                idx = np.random.randint(0, projections.shape[0]) if randomize else i * 3 + j
+                ax[i, j].imshow(projections[idx, 0], cmap='gray')
+                ax[i, j].set_title(f'Frame {idx}')
+                ax[i, j].axis('off')
+
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_smooth_dist_intial_guess(self, gt_q=None):
+        smoothed_dists = self.tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
+        peaks = self.tomo.rotation_initial_dict['peaks'].cpu().numpy()
+
+        fig = plt.figure(figsize=(12, 4))
+        gs = gridspec.GridSpec(1, 2, width_ratios=[1, 2])
+
+        ax0 = plt.subplot(gs[0])
+        ax0.plot(smoothed_dists)
+        ax0.scatter(peaks, smoothed_dists[peaks], c='r', label="Peaks")
+        ax0.set_title("Smoothed Distances and Peaks")
+        ax0.set_xlabel("Time Step")
+        ax0.set_ylabel("Smoothed Distance")
+        ax0.legend()
+
+        ax1 = plt.subplot(gs[1:])
+        q1 = self.tomo.rotation_initial_dict['quaternions'].cpu().numpy()
+        for i in range(4):
+            ax1.plot(q1[:, i], label=fr'$q_{i}$', linewidth=2)
+        ax1.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
+
+        if gt_q is not None:
+            for i in range(4):
+                ax1.plot(gt_q[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
+        ax1.set_title("Initial Guess vs True Quaternion Components")
+
+        ax1.legend()
+        self._save_fig('combined_plot_wider')
+
+    def plot_initial(self, gt_q=None):
+
+        # Plot the latent space
+        self.plot_latent_space()
+
+        # Plot the smoothed distances and peaks
+        self.plot_smooth_dist_intial_guess()
+
+        # Plot the reconstructed vs ground truth frames
+        self.plot_reconstructed_vs_gt()
+
+    def plot_optimization(self, gt_q=None, gt_v=None):
+        predicted_object = self.tomo.volume.detach().cpu().numpy()
+        projections_pred = self.tomo.full_forward_final().detach().cpu().numpy()
+        projections_gt = self.tomo.frames.detach().cpu().numpy()
+        quaternions_pred = self.tomo.get_quaternions_final().detach().cpu().numpy()
+
+        # Plot the predicted object
+        self.plot_sum_object(predicted_object, save_name="predicted_object")
+
+        if gt_v is not None:
+            self.plot_sum_object(gt_v.numpy(), save_name="gt_object")
+
+        # Plot the projections
+        self.plot_reconstructed_vs_gt(projections_pred, projections_gt, save_name='projections', column_headers=["Predicted", "Ground Truth"])
+
+        # Plot the quaternions
+        self.plot_quaternions(gt=gt_q)
+
+        # Plot the difference between predicted and true quaternions
+        if gt_q is not None:
+            diff = quaternions_pred - gt_q[:len(quaternions_pred)].numpy()
+            plt.figure(figsize=(7, 4))
+            for i in range(4):
+                plt.plot(diff[:, i], label=fr'$q_{i}$', linewidth=2)
+            plt.legend()
+            plt.title("Difference Predicted vs. True Quaternion Components")
+            self._save_fig('quaternions_diff')
+            plt.show()
+
+            fig, ax = plt.subplots(2, 2, figsize=(6, 6))
+            fig.suptitle("Scatter plots of predicted vs. true quaternion components")
+            for i, (r, c) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
+                ax[r][c].scatter(quaternions_pred[:, i], gt_q[:len(quaternions_pred), i], color='darkblue', alpha=0.8)
+                ax[r][c].set_title(fr'$q_{i}$')
+            self._save_fig('quaternions_scatter')
+            plt.show()
+
+def visualize_3d_volume(
+        volume, 
+        pad_remove=2, 
+        save_folder=None, 
+        sigma=0.8, 
+        surface_count=15, 
+        opacity=0.5, 
+        bgcolor='black', 
+        camera_position=(1.25, 1.25, 1.25)
+        ):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
 

@@ -219,7 +219,6 @@ if __name__ == '__main__':
     # Translate image to check if the model can detect the object
     #image = torch.roll(image, shifts=(10, 10), dims=(1, 2))
 
-
     # Initialize MaskRCNNHandler
     handler = MaskRCNNHandler()
 

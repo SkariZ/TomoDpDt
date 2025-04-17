@@ -1,9 +1,12 @@
+"""
+This module contains the implementation of pytorch-based optics which inherit from the original deeptrack optics.
+It includes the following classes:
 
-#from deeptrack import Brightfield as OriginalBrightfield
-#from deeptrack import Fluorescence as OriginalFluorescence
-#from deeptrack import Darkfield as OriginalDarkfield
-#from deeptrack import ISCAT as OriginalISCAT
-
+- Optics: Base class for all optical systems.
+- Fluorescence: Class for simulating fluorescence microscopy.
+- Brightfield: Class for simulating brightfield microscopy.
+- ISCAT: Class for simulating Interferometric Scattering (ISCAT) microscopy.
+"""
 
 from deeptrack.optics import Optics as OriginalOptics
 

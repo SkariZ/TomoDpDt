@@ -2,14 +2,12 @@ import torch
 import torch.nn as nn
 
 try:
-    import sys
-    sys.path.append('..')
-    import deeptrack_t as dt
-    from deeptrack_t.backend.units import create_context
+    import tomodpdt.image_modalities_dt as dt
 except:
-    import deeptrack_t as dt
-    from deeptrack_t.backend.units import create_context
+    import image_modalities_dt as dt
 
+import deeptrack
+from deeptrack.backend.units import create_context
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -166,7 +164,7 @@ class imaging_model(nn.Module):
             torch.Tensor: Optical image of the object.
         """
  
-        with dt.units.context(
+        with deeptrack.units.context(
             create_context(
                 xpixel=1e-7,
                 ypixel=1e-7,

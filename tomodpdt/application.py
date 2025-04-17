@@ -6,7 +6,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
 
-from typing import Optional, Sequence#, Callable, List
+from typing import Optional, Sequence
 import time
 
 # Importing the necessary modules
