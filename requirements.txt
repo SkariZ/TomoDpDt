@@ -1,0 +1,5 @@
+deeplay
+deeptrack
+plotly
+scipy
+opencv-python
