@@ -31,6 +31,7 @@ for n in range(1, 10):
     _FASTEST_SIZES += [2 ** a * 3 ** (n - a - 1) for a in range(n)]
 _FASTEST_SIZES = np.sort(_FASTEST_SIZES)
 
+
 def pad_image_to_fft(
     image: Union[torch.Tensor, np.ndarray],
     axes: Iterable[int] = (0, 1),

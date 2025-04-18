@@ -12,6 +12,7 @@ from deeptrack.backend.units import create_context
 import matplotlib.pyplot as plt
 import numpy as np
 
+
 def setup_optics(
         nsize, 
         padding_xy=64, 

@@ -149,11 +149,11 @@ if __name__ == "__main__":
     x = torch.randn(8, 2, N, N)
 
     vae_model = dl.VariationalAutoEncoder(latent_dim=2, input_size=(N, N))
-    vae_model.encoder=vae.encoder
-    vae_model.decoder=vae.decoder
-    vae_model.fc_mu=vae.fc_mu
-    vae_model.fc_var=vae.fc_var
-    vae_model.fc_dec=vae.fc_dec
+    vae_model.encoder = vae.encoder
+    vae_model.decoder = vae.decoder
+    vae_model.fc_mu = vae.fc_mu
+    vae_model.fc_var = vae.fc_var
+    vae_model.fc_dec = vae.fc_dec
     
     vae_model.build()
 

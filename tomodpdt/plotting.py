@@ -339,7 +339,8 @@ def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=T
         # 3D plot of the ground truth object
         if gt_v is not None:
             visualize_3d_volume(gt_v.numpy())
-            
+
+
 class TomoPlotter:
     def __init__(self, tomo, save_folder=None, dpi=200):
         self.tomo = tomo
@@ -360,6 +361,9 @@ class TomoPlotter:
         fig.colorbar(scatter, ax=axes[0])
         axes[0].set_xlabel('z1')
         axes[0].set_ylabel('z2')
+        
+        # Add text where the trajectory starts
+        axes[0].text(z[0, 0], z[0, 1], "Start", fontsize=12, color='red')
 
         ax = fig.add_subplot(1, 2, 2, projection='3d')
         ax.set_title("Latent space (3D)")
@@ -373,11 +377,18 @@ class TomoPlotter:
         self._save_fig('latent_space_combined')
         plt.show()
 
-    def plot_reconstructed_vs_gt(self, pred=None, gt=None, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"]):
+    def plot_reconstructed_vs_gt(self, pred=None, gt=None, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"], forward=False):
+
         if pred is None:
-            pred = self.tomo.vae_model(self.tomo.frames[:9])[0].cpu()
+
+            if not forward:
+                m = self.tomo.vae_model.to(self.tomo.frames.device)
+                pred = m(self.tomo.frames)[0].cpu().numpy()
+            else:
+                pred = self.tomo.full_forward_final().detach().cpu().numpy()
+
         if gt is None:
-            gt = self.tomo.frames[:9].cpu()
+            gt = self.tomo.frames[:9].cpu().numpy()
 
         fig, ax = plt.subplots(3, 6, figsize=(12, 6))
         plt.suptitle(f"{column_headers[0]} vs {column_headers[1]} Frames", fontsize=14)
@@ -390,17 +401,20 @@ class TomoPlotter:
                 ax[i, j].imshow(pred[i * 3 + j, 0], cmap="gray")
                 ax[i, j].set_title(f'Recon {i * 3 + j}')
                 ax[i, j].axvline(x=pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+                ax[i, j].axhline(y=pred.shape[3] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j].axis('off')
 
                 ax[i, j + 3].imshow(gt[i * 3 + j, 0], cmap="gray")
                 ax[i, j + 3].set_title(f'GT {i * 3 + j}')
                 ax[i, j + 3].axvline(x=gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
+                ax[i, j + 3].axhline(y=gt.shape[3] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j + 3].axis('off')
 
         self._save_fig(save_name)
         plt.show()
 
     def plot_sum_object(self, obj=None, save_name="object"):
+
         if obj is None:
             obj = self.tomo.volume.detach().cpu().numpy()
 
@@ -419,6 +433,7 @@ class TomoPlotter:
         plt.show()
 
     def plot_sinogram(self, slice_n=None, save_name="sinogram"):
+
         frames = self.tomo.frames.cpu().numpy()
         if slice_n is None:
             slice_n = frames.shape[1] // 2
@@ -435,15 +450,17 @@ class TomoPlotter:
         self._save_fig(save_name)
         plt.show()
 
-    def plot_quaternions(self, gt=None, save_name="quaternion"):
-        q = self.tomo.get_quaternions_final().cpu().numpy()
+    def plot_quaternions(self, q_gt=None, save_name="quaternion"):
+
+        q = self.tomo.get_quaternions_final().detach().cpu().numpy()
         plt.figure(figsize=(7, 4))
         for i in range(4):
             plt.plot(q[:, i], label=fr'$q_{i}$', linewidth=2)
-        if gt is not None:
-            gt = gt.cpu().numpy()
+
+        if q_gt is not None:
+            q_gt = q_gt.cpu().numpy()
             for i in range(4):
-                plt.plot(gt[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
+                plt.plot(q_gt[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
         plt.legend()
         plt.xlabel('Frame')
         plt.ylabel('Quaternion')
@@ -452,6 +469,7 @@ class TomoPlotter:
         plt.show()
 
     def plot_grid33_frames(self, projections=None, title='frames', save_name='frames_grid', randomize=False):
+
         if projections is None:
             projections = self.tomo.frames.cpu().numpy()
 
@@ -468,7 +486,8 @@ class TomoPlotter:
         self._save_fig(save_name)
         plt.show()
 
-    def plot_smooth_dist_intial_guess(self, gt_q=None):
+    def plot_smooth_dist_intial_guess(self, q_gt=None):
+
         smoothed_dists = self.tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
         peaks = self.tomo.rotation_initial_dict['peaks'].cpu().numpy()
 
@@ -489,24 +508,55 @@ class TomoPlotter:
             ax1.plot(q1[:, i], label=fr'$q_{i}$', linewidth=2)
         ax1.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
 
-        if gt_q is not None:
+        if q_gt is not None:
             for i in range(4):
-                ax1.plot(gt_q[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
+                ax1.plot(q_gt[:, i].cpu().numpy(), '--', label=fr'$q_{i}$ (GT)', linewidth=2)
         ax1.set_title("Initial Guess vs True Quaternion Components")
 
         ax1.legend()
         self._save_fig('combined_plot_wider')
 
-    def plot_initial(self, gt_q=None):
+    def plot_initial(self, q_gt=None):
 
         # Plot the latent space
         self.plot_latent_space()
 
         # Plot the smoothed distances and peaks
-        self.plot_smooth_dist_intial_guess()
+        self.plot_smooth_dist_intial_guess(q_gt=q_gt)
 
         # Plot the reconstructed vs ground truth frames
         self.plot_reconstructed_vs_gt()
+
+    def plot_quaternion_diff(self, quaternions_pred, gt_q):
+        """
+        Plots the difference between predicted and true quaternion components,
+        as well as scatter plots of predicted vs. true quaternions.
+
+        Args:
+            quaternions_pred (tensor): Predicted quaternion components.
+            gt_q (tensor): Ground truth quaternion components.
+        """
+        if gt_q is not None:
+            # Compute the difference between predicted and true quaternions
+            diff = quaternions_pred - gt_q[:len(quaternions_pred)].numpy()
+
+            # Plot the differences
+            plt.figure(figsize=(7, 4))
+            for i in range(4):
+                plt.plot(diff[:, i], label=fr'$q_{i}$', linewidth=2)
+            plt.legend()
+            plt.title("Difference Predicted vs. True Quaternion Components")
+            self._save_fig('quaternions_diff')
+            plt.show()
+
+            # Create scatter plots for each quaternion component
+            fig, ax = plt.subplots(2, 2, figsize=(6, 6))
+            fig.suptitle("Scatter plots of predicted vs. true quaternion components")
+            for i, (r, c) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
+                ax[r][c].scatter(quaternions_pred[:, i], gt_q[:len(quaternions_pred), i], color='darkblue', alpha=0.8)
+                ax[r][c].set_title(fr'$q_{i}$')
+            self._save_fig('quaternions_scatter')
+            plt.show()
 
     def plot_optimization(self, gt_q=None, gt_v=None):
         predicted_object = self.tomo.volume.detach().cpu().numpy()
@@ -527,23 +577,8 @@ class TomoPlotter:
         self.plot_quaternions(gt=gt_q)
 
         # Plot the difference between predicted and true quaternions
-        if gt_q is not None:
-            diff = quaternions_pred - gt_q[:len(quaternions_pred)].numpy()
-            plt.figure(figsize=(7, 4))
-            for i in range(4):
-                plt.plot(diff[:, i], label=fr'$q_{i}$', linewidth=2)
-            plt.legend()
-            plt.title("Difference Predicted vs. True Quaternion Components")
-            self._save_fig('quaternions_diff')
-            plt.show()
+        self.plot_quaternion_diff(quaternions_pred, gt_q)
 
-            fig, ax = plt.subplots(2, 2, figsize=(6, 6))
-            fig.suptitle("Scatter plots of predicted vs. true quaternion components")
-            for i, (r, c) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
-                ax[r][c].scatter(quaternions_pred[:, i], gt_q[:len(quaternions_pred), i], color='darkblue', alpha=0.8)
-                ax[r][c].set_title(fr'$q_{i}$')
-            self._save_fig('quaternions_scatter')
-            plt.show()
 
 def visualize_3d_volume(
         volume, 
