@@ -8,6 +8,7 @@ import matplotlib.pyplot as plt
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
 RI_RANGE = (1.33, 1.42)
+RERUN = False
 
 # Set the random seed for reproducibility
 np.random.seed(123)
@@ -52,6 +53,7 @@ def generate_3d_volume(size, num_layers, layer_densities):
 
     return volume
 
+
 def sample_positions_3D(num_points, area_size, min_distance, edge_margin=8):
     """
     Generate random 3D positions while ensuring a minimum distance between them 
@@ -82,112 +84,131 @@ def sample_positions_3D(num_points, area_size, min_distance, edge_margin=8):
 
     return np.array(positions).astype(int)
 
-
 ### VOLUME 1 ###
-grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
+if RERUN:
+    grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
 
-# Gaussian blob parameters
-centers = [(16, 32, 32), (48, 32, 32), (32, 16, 32), 
-        (32, 48, 32), (32, 32, 16), (32, 32, 48),
-        ]  # Center positions
+    # Gaussian blob parameters
+    centers = [(16, 32, 32), (48, 32, 32), (32, 16, 32), 
+            (32, 48, 32), (32, 32, 16), (32, 32, 48),
+            ]  # Center positions
 
-# Generate blobs
-sigma_random = np.random.uniform(2, 6, len(centers))
-for i, center in enumerate(centers):
-    x, y, z = np.indices((SIZE, SIZE, SIZE))  # 3D coordinates
-    blob = np.exp(-((x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2) / (2 * sigma_random[i]**2))
-    grid += blob  # Add each blob to the grid
+    # Generate blobs
+    sigma_random = np.random.uniform(2, 6, len(centers))
+    for i, center in enumerate(centers):
+        x, y, z = np.indices((SIZE, SIZE, SIZE))  # 3D coordinates
+        blob = np.exp(-((x - center[0])**2 + (y - center[1])**2 + (z - center[2])**2) / (2 * sigma_random[i]**2))
+        grid += blob  # Add each blob to the grid
 
-# Normalize the grid for visualization
-grid /= grid.max()
+    # Normalize the grid for visualization
+    grid /= grid.max()
 
-# Scale to RI range
-VOL_GAUSS = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+    # Scale to RI range
+    VOL_GAUSS = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+else:
+    # Load the precomputed volume
+    VOL_GAUSS = np.load('../test_data/vol_gauss.npy')
+
 #################
 
 ### VOLUME 2 ###
-# Parameters
-num_layers = 5  # Number of layers inside the sphere
+if RERUN:
+    num_layers = 5  # Number of layers inside the sphere
 
-# Specify custom densities for each layer
-layer_densities = [1, 2, 3, 4, 5]  # You can modify this list to set custom values for each layer
+    # Specify custom densities for each layer
+    layer_densities = [1, 2, 3, 4, 5]  # You can modify this list to set custom values for each layer
 
-# Generate the volume
-volume = generate_3d_volume(SIZE, num_layers, layer_densities)
+    # Generate the volume
+    volume = generate_3d_volume(SIZE, num_layers, layer_densities)
 
-# Normalize the volume for visualization
-VOL_SHELL = (volume - volume.min()) / (volume.max() - volume.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+    # Normalize the volume for visualization
+    VOL_SHELL = (volume - volume.min()) / (volume.max() - volume.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+else:
+    # Load the precomputed volume
+    VOL_SHELL = np.load('../test_data/vol_shell.npy')
+
 ##################
 
 ### VOLUME 3 ###
-grid = np.zeros((SIZE, SIZE, SIZE))
+if RERUN:
+    grid = np.zeros((SIZE, SIZE, SIZE))
 
-# Random points
-num_points = 10
-thickness = 1
-points = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
+    # Random points
+    num_points = 10
+    thickness = 1
+    points = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
 
-# Set the random points to 1
-for point in points:
-    grid[
-        point[0]-thickness:point[0]+thickness, 
-        point[1]-thickness:point[1]+thickness, 
-        point[2]-thickness:point[2]+thickness
-        ] = 1
+    # Set the random points to 1
+    for point in points:
+        grid[
+            point[0]-thickness:point[0]+thickness, 
+            point[1]-thickness:point[1]+thickness, 
+            point[2]-thickness:point[2]+thickness
+            ] = 1
+    VOL_FLUO = grid
 
-VOL_FLUO = grid
+else:
+    # Load the precomputed volume
+    VOL_FLUO = np.load('../test_data/vol_fluo.npy')
+
 ##################
 
 ### VOLUME 4 ###
-grid = np.zeros((SIZE, SIZE, SIZE))
+if RERUN:
+    grid = np.zeros((SIZE, SIZE, SIZE))
 
-# Random points
-num_points = 12
+    # Random points
+    num_points = 12
 
-# Generate random positions with a minimum distance between them
-positions = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
+    # Generate random positions with a minimum distance between them
+    positions = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
 
-# add small gaussian blobs at random positions
-for i in range(10):
-    x, y, z = positions[i]
-    blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * 2**2))
-    grid += blob
+    # add small gaussian blobs at random positions
+    for i in range(10):
+        x, y, z = positions[i]
+        blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * 2**2))
+        grid += blob
 
-grid /= grid.max()
+    grid /= grid.max()
 
-VOL_GAUSS_MULT = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+    VOL_GAUSS_MULT = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+else:
+    # Load the precomputed volume
+    VOL_GAUSS_MULT = np.load('../test_data/vol_gauss_mult.npy')
 
 ##################
 
 ### VOLUME 5 ###
+if RERUN:
+    grid = np.zeros((SIZE, SIZE, SIZE))
 
-grid = np.zeros((SIZE, SIZE, SIZE))
+    # Random shapes at random positions
 
-# Random shapes at random positions
+    # 6 random positions that are not too close to the edges and not too close to each other
+    positions = sample_positions_3D(6, (SIZE, SIZE, SIZE), min_distance=SIZE//4)
 
-# 6 random positions that are not too close to the edges and not too close to each other
-positions = sample_positions_3D(6, (SIZE, SIZE, SIZE), min_distance=SIZE//4)
+    count = 0
+    # 3 random squares of random sizes
+    for i in range(3):
+        x, y, z = positions[count]
+        size = np.random.randint(SIZE//16, SIZE//6)
+        grid[x:x+size, y:y+size, z:z+size] = 0.5
+        count += 1
 
-count = 0
-# 3 random squares of random sizes
-for i in range(3):
-    x, y, z = positions[count]
-    size = np.random.randint(SIZE//16, SIZE//6)
-    grid[x:x+size, y:y+size, z:z+size] = 0.5
-    count += 1
+    # 3 random circles of random sizes
+    for i in range(3):
+        x, y, z = positions[count]
+        radius = np.random.randint(SIZE//16, SIZE//8)
+        blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * radius**2))
+        grid += blob
+        count += 1
 
-# 3 random circles of random sizes
-for i in range(3):
-    x, y, z = positions[count]
-    radius = np.random.randint(SIZE//16, SIZE//8)
-    blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * radius**2))
-    grid += blob
-    count += 1
+    grid /= grid.max()
 
-grid /= grid.max()
-
-VOL_RANDOM = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
-
+    VOL_RANDOM = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+else:
+    # Load the precomputed volume
+    VOL_RANDOM = np.load('../test_data/vol_random.npy')
 
 
 if __name__== "__main__":

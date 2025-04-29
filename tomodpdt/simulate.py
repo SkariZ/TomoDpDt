@@ -15,8 +15,8 @@ except:
     import volumes as V
 
 # Set the random seed for reproducibility
-np.random.seed(123)
-torch.manual_seed(123)
+# np.random.seed(123)
+# torch.manual_seed(123)
 
 VOL_GAUSS = V.VOL_GAUSS
 VOL_FLUO = V.VOL_FLUO
@@ -27,7 +27,15 @@ VOL_RANDOM = V.VOL_RANDOM
 # Settings
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 
-def create_data(volume=None, volume_case='gaussian_multiple', image_modality='sum_projection', samples=400, duration=2, rotation_case='sinusoidal'):
+
+def create_data(
+        volume=None, 
+        volume_case='gaussian_multiple', 
+        image_modality='sum_projection', 
+        samples=400, 
+        duration=2, 
+        rotation_case='sinusoidal'
+        ):
     """
     Function to create a dataset of 3D objects and their 2D projections, given the imaging modality and the rotation case.
     """

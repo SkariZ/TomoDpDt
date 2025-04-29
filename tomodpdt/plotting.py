@@ -511,7 +511,7 @@ class TomoPlotter:
         if q_gt is not None:
             for i in range(4):
                 ax1.plot(q_gt[:, i].cpu().numpy(), '--', label=fr'$q_{i}$ (GT)', linewidth=2)
-        ax1.set_title("Initial Guess vs True Quaternion Components")
+        ax1.set_title("Initial Guess vs. True Quaternion Components")
 
         ax1.legend()
         self._save_fig('combined_plot_wider')

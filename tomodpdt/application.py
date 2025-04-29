@@ -126,11 +126,11 @@ class Tomography(dl.Application):
         if self.CH > 0 and self.N >= 32:
             # Update the VAE model to handle multiple channels
             vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2)
-            self.vae_model.encoder=vae.encoder
-            self.vae_model.decoder=vae.decoder
-            self.vae_model.fc_mu=vae.fc_mu
-            self.vae_model.fc_var=vae.fc_var
-            self.vae_model.fc_dec=vae.fc_dec
+            self.vae_model.encoder = vae.encoder
+            self.vae_model.decoder = vae.decoder
+            self.vae_model.fc_mu = vae.fc_mu
+            self.vae_model.fc_var = vae.fc_var
+            self.vae_model.fc_dec = vae.fc_dec
             self.vae_model.beta = 0.025
             
         # Normalize projections
@@ -155,7 +155,7 @@ class Tomography(dl.Application):
             z=latent_space, 
             frames=projections, 
             **kwargs
-            )  # Later: add axis also
+            )
 
         # Set the rotation parameters
         if self.rotation_optim_case == 'quaternion':
@@ -166,6 +166,7 @@ class Tomography(dl.Application):
         else:
             raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'. as of now...")
         
+        # Move the rotation parameters to the device and make them nn.Parameters
         self.rotation_params = nn.Parameter(rotation_params.to(self._device))
 
         # Setting frames to the number of rotations
@@ -180,6 +181,7 @@ class Tomography(dl.Application):
         """
         Compute the global min/max values per channel over the entire dataset.
         """
+        # Compute the global min/max values per channel over the entire dataset
         global_min = torch.amin(projections, dim=(0, 2, 3))
         global_max = torch.amax(projections, dim=(0, 2, 3))  
 
@@ -318,11 +320,16 @@ class Tomography(dl.Application):
         return estimated_projections_batch
     
     def training_step(self, batch, batch_idx):
-        idx = batch
-        batch = self.frames[idx]
+        """
+        Training step for the model. Computes the loss and logs it.
+        """
+
+        # Get the batch of frames and the corresponding indices
+        idx_batch = batch
+        frames_batch = self.frames[idx_batch]
 
         # Forward step - Estimate the projections
-        yhat = self.forward(idx) 
+        yhat = self.forward(idx_batch) 
 
         # Normalize the estimated projections
         if self.normalize:
@@ -334,7 +341,7 @@ class Tomography(dl.Application):
         
         # Compute the losses
         proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss(
-            yhat, latent_space, batch, idx, self.loss_weights
+            yhat, latent_space, frames_batch, idx_batch, self.loss_weights
             )
 
         # Compute the total loss
@@ -361,22 +368,22 @@ class Tomography(dl.Application):
             )
         return tot_loss
     
-    def compute_loss(self, yhat, latent_space, batch, idx, loss_weights=None):
+    def compute_loss(self, yhat, latent_space, frames_batch, idx_batch, loss_weights=None):
         """
         Compute the projection loss, latent loss, and other regularization terms.
         """
 
         # Compute the projection loss - MAE
-        proj_loss = F.l1_loss(yhat, batch)
+        proj_loss = F.l1_loss(yhat, frames_batch)
 
         # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
-        latent_loss = F.l1_loss(latent_space, self.latent[idx])
+        latent_loss = F.l1_loss(latent_space, self.latent[idx_batch])
 
         # Compute the total variation regularization term
         rtv_loss = self.total_variation_regularization(self.volume)
 
         # This is the predicted quaternions
-        quaternions_pred = self.get_quaternions(self.rotation_params)[idx]
+        quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
 
         # Compute the quaternion validity loss
         qv_loss = self.quaternion_validity_loss(
@@ -384,15 +391,15 @@ class Tomography(dl.Application):
             )
 
         # Compute the q0 constraint loss if 0 is in the indices
-        if torch.sum(idx == 0) > 0:
+        if torch.sum(idx_batch == 0) > 0:
             q0_loss = self.q0_constraint_loss(
-                quaternions_pred[idx == 0]
+                quaternions_pred[idx_batch == 0]
                 )
         else:
             q0_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the rotational trajectory regularization term if the indices are consecutive and optimization case is 'quaternion' and not 'basis'
-        if torch.abs(idx[1:] - idx[:-1]).sum() == len(idx) - 1 and self.rotation_optim_case == 'quaternion':
+        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion':
             rtr_loss = self.rotational_trajectory_regularization(
                 quaternions_pred
                 )
@@ -739,7 +746,7 @@ if __name__ == "__main__":
 
     image_modality_list = ['brightfield', 'fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
     rotation_case_list = ['random_sinusoidal', '1ax']
-    save_folder_root = '../results4'
+    save_folder_root = '../results'
     if not os.path.exists(save_folder_root):
         os.makedirs(save_folder_root)
 

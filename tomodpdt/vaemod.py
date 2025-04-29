@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
-
 import deeplay as dl
+
 
 class ConvVAE(nn.Module):
     def __init__(
