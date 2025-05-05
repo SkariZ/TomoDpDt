@@ -26,7 +26,7 @@ class ConvVAE(nn.Module):
 
         self.encoder = self.build_encoder()
         
-        if len(self.conv_channels)!=3:
+        if len(self.conv_channels) != 3:
             raise ValueError("conv_channels must have 3 elements, hardcoded for now...")
 
         #self.fc_mu = nn.Linear(self.flattened_size(), latent_dim)
@@ -143,7 +143,7 @@ class ConvVAE(nn.Module):
 
 if __name__ == "__main__":
 
-    N = 48
+    N = 256
     vae = ConvVAE((2, N, N), latent_dim=2)
     
     x = torch.randn(8, 2, N, N)
