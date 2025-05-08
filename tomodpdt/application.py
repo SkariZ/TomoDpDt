@@ -394,8 +394,10 @@ class Tomography(dl.Application):
             }
         
         # Remove these losses from the dictionary if they are exactly 0 for nicer logging/plotting
-        if rtr_trans_loss == 0: loss.pop('rtr_trans_loss')
-        if rtr_loss == 0: loss.pop('rtr_loss')
+        if rtr_trans_loss == 0: 
+            loss.pop('rtr_trans_loss')
+        if rtr_loss == 0: 
+            loss.pop('rtr_loss')
 
         for name, v in loss.items():
             self.log(
@@ -743,7 +745,7 @@ class Tomography(dl.Application):
                 translations=translations[i] if translations is not None else None
                 )
 
-             # Check if imaging model is a nn.Module
+            # Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projection = self.imaging_model(rotated_volume)
 
@@ -789,6 +791,7 @@ class Tomography(dl.Application):
         if self.rotation_optim_case == 'quaternion':
             rotations = rotations / rotations.norm(dim=-1, keepdim=True)
             return rotations
+        
         elif self.rotation_optim_case == 'basis':
             rotations = torch.matmul(self.basis.to(self._device), rotations)
             rotations = rotations / rotations.norm(dim=-1, keepdim=True)
@@ -849,103 +852,7 @@ class Tomography(dl.Application):
 
 # Testing the code
 if __name__ == "__main__":
-    import os
-
-    image_modality_list = ['brightfield', 'fluorescence']#, 'darkfield', 'brightfield', 'sum_projection']#, 'darkfield', 'brightfield', 'sum_projection']
-    rotation_case_list = ['random_sinusoidal', '1ax']
-    save_folder_root = '../results'
-    if not os.path.exists(save_folder_root):
-        os.makedirs(save_folder_root)
-
-    for image_modality in image_modality_list:
-        for rotation_case in rotation_case_list:
-
-            save_folder = f"{save_folder_root}/{image_modality}_{rotation_case}/"
-            if not os.path.exists(save_folder):
-                os.makedirs(save_folder)
-
-            print(image_modality, rotation_case)
-            test_object, q_gt, projections, imaging_model = sim.create_data(image_modality=image_modality, rotation_case=rotation_case, samples=400)
-
-            # Downsample the projections 2x and downsample the object 2x
-            scale = 1
-            projections = F.interpolate(projections, scale_factor=scale, mode='bilinear')
-            try:
-                test_object = F.interpolate(test_object.unsqueeze(0).unsqueeze(0), scale_factor=scale, mode='trilinear').squeeze(0).squeeze(0)
-            except:
-                test_object = None
-
-            # Assuming the projections are square and the volume is cubic
-            N = projections.shape[-1]
-
-            # Create the tomography model
-            tomo = Tomography(
-                volume_size=(N, N, N),
-                rotation_optim_case='basis',
-                initial_volume='zeros' if image_modality == 'fluorescence' else 'refraction',
-                imaging_model=imaging_model
-                )
-
-            # Initialize the parameters
-            tomo.initialize_parameters(projections, normalize=True)
-            
-            # Train the model
-            N = len(tomo.frames)
-            idx = torch.arange(N)
-
-            start_time = time.time()
-
-            # Toggle the gradients rotation params to off for initial phase
-            tomo.toggle_gradients_quaternion(False)
-
-            # First axis test.
-            trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
-            loss1 = trainer.callback_metrics['train_total_loss_epoch'].item()
-            vol1 = tomo.volume.clone()
-            rot1 = tomo.rotation_params.clone()    
-
-            # Swap the rotation axis.
-            tomo.swap_rotation_axis()
-            tomo.initialize_volume()
-            tomo.move_all_to_device("cuda")
-            trainer = dl.Trainer(max_epochs=10, accelerator="auto", log_every_n_steps=10)
-            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=True))
-            loss2 = trainer.callback_metrics['train_total_loss_epoch'].item()
-            vol2 = tomo.volume.clone()
-            rot2 = tomo.rotation_params.clone()
-
-            # Choose the best loss and proceed with that.
-            if loss1 < loss2:
-                print("Loss 1 is better ie. choose optimized axis", loss1, loss2)
-                tomo.volume = nn.Parameter(vol1)
-                tomo.rotation_params = nn.Parameter(rot1)
-            else:
-                del vol1, rot1, loss1, vol2, rot2, loss2
-
-            # Visualize the latent space and the initial rotations
-            plotting.plots_initial(tomo, save_folder=save_folder, gt=q_gt.to('cpu'))
-
-            #Toggle the gradients of the quaternion parameters
-            tomo.toggle_gradients_quaternion(True)
-            tomo.move_all_to_device("cuda")
-            trainer = dl.Trainer(max_epochs=500, accelerator="auto", log_every_n_steps=10)
-            trainer.fit(tomo, DataLoader(idx, batch_size=128, shuffle=False))
-            tomo.move_all_to_device("cuda")
-            print("Training time: ", (time.time() - start_time) / 60, " minutes")
-
-            # Plot the training history
-            try:
-                trainer.history.plot()
-            except:
-                print("No history to plot...")
-
-            # Visualize the final volume and rotations.
-            plotting.plots_optim(tomo, save_folder=save_folder, gt_q=q_gt.to('cpu'), gt_v=test_object.to('cpu'))
-            
-            # Save volume and rotations
-            torch.save(tomo.volume, f"{save_folder}volume_{image_modality}_{rotation_case}.pt")
-            torch.save(tomo.rotation_params, f"{save_folder}/rotations_{image_modality}_{rotation_case}.pt")
+    pass
 
 
 

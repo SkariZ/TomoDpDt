@@ -1,5 +1,6 @@
 import numpy as np
-
+from scipy.linalg import svd
+import cv2
 
 # Generate a sinusoidal quaternion
 def generate_sinusoidal_quaternion(omega=2 * np.pi, phi=np.pi / 8,
@@ -195,8 +196,83 @@ def generate_random_varying_quaternion(omega1=2 * np.pi, omega2=np.pi / 3,
 
     return np.array([q0, q1, q2, q3]).T
 
+def compute_optical_flow(frames):
+    """
+    Computes dense optical flow between consecutive frames.
+    :param frames: NumPy array of shape (T, 64, 64) with values in range [0,1].
+    :return: Motion vectors (dx, dy) for sampled points.
+    """
+
+    import cv2
+
+    T, H, W = frames.shape
+    flow_vectors = []
+
+    for t in range(T - 1):
+        prev_gray = (frames[t] * 255).astype(np.uint8)  # Convert to 0-255
+        next_gray = (frames[t + 1] * 255).astype(np.uint8)
+
+        # Compute dense optical flow
+        flow = cv2.calcOpticalFlowFarneback(
+            prev_gray, next_gray, None, 0.5, 3, 15, 3, 5, 1.2, 0
+            )
+
+        # Sample motion vectors at every 4 pixels
+        y, x = np.mgrid[0:H:4, 0:W:4].reshape(2, -1).astype(int)
+        dx, dy = flow[y, x].T
+        points = np.column_stack([x, y, dx, dy])
+        flow_vectors.append(points)
+
+    return np.vstack(flow_vectors)
+
+def align_frames_cv2(frames):
+    # Ensure frames are in the correct format
+    if frames.ndim == 3:
+        frames = frames.unsqueeze(0)  # Add batch dimension
+
+    frames = frames[:, 0].cpu().numpy()
+
+    # Compute dense optical flow between consecutive frames
+    flow_vectors = compute_optical_flow(frames)
+
+    discplacement = flow_vectors[:, 2:4]  # Extract dx, dy components
+    _, _, Vt = svd(discplacement, full_matrices=False)
+    principal_axis = Vt[0]  # First principal component
+    principal_axis = principal_axis / np.linalg.norm(principal_axis)  # Normalize
+
+    # Compute rotation angle and align so that the first component is along the x-axis
+    if principal_axis[0] > 0:
+        rotation_angle = np.arctan2(principal_axis[1], principal_axis[0])
+    else:
+        rotation_angle = np.arctan2(-principal_axis[1], -principal_axis[0])
+
+    # Convert rotation angle from radians to degrees
+    rotation_angle = np.degrees(rotation_angle)
+
+    # Align the images to have no tilt
+    tilt_frames = np.zeros_like(frames)
+    for i in range(len(frames)):
+        tilt_frames[i] = cv2.warpAffine(
+            frames[i], 
+            cv2.getRotationMatrix2D((frames[i].shape[1] // 2, frames[i].shape[0] // 2), rotation_angle, 1),
+            (frames[i].shape[1], frames[i].shape[0])
+            )
+    
+    return tilt_frames
 
 if __name__ == "__main__":
+    import torch
+    import torch.nn as nn
+
+    projections = np.load('C:/Users/Fredrik/Desktop/RotationsData/Movies_cropped_np/movie11.npy')
+    projections = projections[::8]
+    projections = torch.tensor(projections, dtype=torch.float32).unsqueeze(1)
+
+    #Downsample 2x
+    projections = nn.functional.avg_pool2d(projections, 2)
+
+    projs = align_frames_cv2(projections)
+
     samples = 400
     duration = 2
 
