@@ -268,7 +268,7 @@ class Optics(OriginalOptics):
             old_region[0, 0]: old_region[0, 0] + limits[0, 1] - limits[0, 0],
             old_region[1, 0]: old_region[1, 0] + limits[1, 1] - limits[1, 0],
             old_region[2, 0]: old_region[2, 0] + limits[2, 1] - limits[2, 0]
-        ] = True  # ✅ Mark positions to update
+        ] = True
         
         pad_x = new_volume.shape[0] - volume.shape[0]
         pad_y = new_volume.shape[1] - volume.shape[1]
@@ -779,20 +779,18 @@ class Brightfield(Optics):
             : padded_volume.shape[0], : padded_volume.shape[1]
         ]
         output_image = torch.unsqueeze(output_image, axis=-1)
-        output_image = Image(output_image[pad[0] : -pad[2], pad[1] : -pad[3]])
 
+        # Intensity image if not returning field
         if not kwargs.get("return_field", False):
             output_image = torch.square(torch.abs(output_image))
-        # else:
-        # Fudge factor. Not sure why this is needed.
-        # output_image = output_image - 1
-        # output_image = output_image * np.exp(1j * -np.pi / 4)
-        # output_image = output_image + 1
-        illuminated_volume = Image(illuminated_volume)
 
+        output_image = Image(output_image[pad[0] : -pad[2], pad[1] : -pad[3]])
+
+        illuminated_volume = Image(illuminated_volume)
         output_image.properties = illuminated_volume.properties
 
         return output_image
+
 
 class ISCAT(Brightfield):
     """Images coherently illuminated samples using Interferometric Scattering 

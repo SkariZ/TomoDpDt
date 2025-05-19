@@ -456,6 +456,8 @@ class Tomography(dl.Application):
             rtr_trans_loss = self.rotational_trajectory_regularization(
                 translations_pred
                 )
+        else:
+            rtr_trans_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the strictly over loss
         if self.initial_volume == 'refraction':
