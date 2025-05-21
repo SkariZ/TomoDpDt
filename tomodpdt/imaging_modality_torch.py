@@ -135,7 +135,7 @@ class imaging_model(nn.Module):
 
         # Set padding values 
         self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
-        self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
+        self.forward_case = 'loop'#'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
     def forward(self, object):
         self.limits = self.limits.to(object.device)

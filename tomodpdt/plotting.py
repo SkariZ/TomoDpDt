@@ -385,7 +385,7 @@ class TomoPlotter:
                 m = self.tomo.vae_model.to(self.tomo.frames.device)
                 pred = m(self.tomo.frames)[0].cpu().numpy()
             else:
-                pred = self.tomo.full_forward_final().detach().cpu().numpy()
+                pred = self.tomo.full_forward_final(max_projections=9).detach().cpu().numpy()
 
         if gt is None:
             gt = self.tomo.frames[:9].cpu().numpy()
@@ -560,7 +560,7 @@ class TomoPlotter:
 
     def plot_optimization(self, gt_q=None, gt_v=None):
         predicted_object = self.tomo.volume.detach().cpu().numpy()
-        projections_pred = self.tomo.full_forward_final().detach().cpu().numpy()
+        projections_pred = self.tomo.full_forward_final(max_projections=16).detach().cpu().numpy()
         projections_gt = self.tomo.frames.detach().cpu().numpy()
         quaternions_pred = self.tomo.get_quaternions_final().detach().cpu().numpy()
 

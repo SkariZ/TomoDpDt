@@ -703,7 +703,7 @@ class Tomography(dl.Application):
 
         return F.grid_sample(volumes, rotated_grid, align_corners=True).squeeze(1)
 
-    def full_forward_final(self):
+    def full_forward_final(self, max_projections=None):
         """
         Forward pass of the model.
 
@@ -735,6 +735,11 @@ class Tomography(dl.Application):
         # Set the global min/max values to the device
         self.global_min = self.global_min.to(self._device)
         self.global_max = self.global_max.to(self._device)
+
+        # If max_projections is not None, set the number of projections to max_projections. Saves time and memory.
+        if max_projections is not None:
+            quaternions = quaternions[:max_projections]
+            translations = translations[:max_projections] if translations is not None else None
 
         # Initialize the estimated projections
         estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
