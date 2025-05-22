@@ -314,16 +314,15 @@ class Tomography(dl.Application):
 
         indexes = torch.arange(0, batch_size)
         b_idx = [indexes[i:i + self.minibatch] for i in range(0, len(indexes), self.minibatch)]
-        volumes = torch.stack([volume.clone() for _ in range(self.minibatch)])
+        # volumes = torch.stack([volume.clone() for _ in range(self.minibatch)])
 
         for b in b_idx:
-
-            # Rotate the volume(s)
+            # Apply rotations to a single volume using a batch of quaternions
             rotated_volumes = self.apply_rotation_batch(
-                volumes[0:len(b)], 
+                volume, 
                 quaternions[b], 
                 translations=translations[b] if translations is not None else None
-                )
+            )
             
             # Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
@@ -396,6 +395,7 @@ class Tomography(dl.Application):
         # Remove these losses from the dictionary if they are exactly 0 for nicer logging/plotting
         if rtr_trans_loss == 0: 
             loss.pop('rtr_trans_loss')
+
         if rtr_loss == 0: 
             loss.pop('rtr_loss')
 
@@ -563,19 +563,6 @@ class Tomography(dl.Application):
 
         return reg_terms
 
-    def sinogram_loss(self, sinogram, sinogram_pred):
-        """
-        Compute the loss between the true and predicted sinograms.
-
-        Args:
-        - sinogram (torch.Tensor): True sinogram.
-        - sinogram_pred (torch.Tensor): Predicted sinogram.
-
-        Returns:
-        - loss (torch.Tensor): The loss between the sinograms.
-        """
-        return F.l1_loss(sinogram, sinogram_pred)
-
     def get_translations(self, raw_translation):
         max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
         return max_translation * torch.tanh(raw_translation)
@@ -669,29 +656,40 @@ class Tomography(dl.Application):
 
         return R
 
-    def apply_rotation_batch(self, volumes, quaternions, translations=None):
+    def apply_rotation_batch(self, volume, quaternions, translations=None):
         """
-        Rotate and optionally translate a batch of 3D volumes using quaternions and translations.
+        Applies a batch of rotations (and optional translations) to a single 3D volume.
 
-        Parameters:
-        - volumes (torch.Tensor): (B, D, H, W) or (B, 1, D, H, W)
-        - quaternions (torch.Tensor): (B, 4)
-        - translations (torch.Tensor or None): (B, 3), in voxel units (dz, dy, dx)
+        Args:
+            volume (torch.Tensor): Input volume of shape (D, H, W) or (1, D, H, W).
+            quaternions (torch.Tensor): Batch of rotation quaternions of shape (B, 4).
+            translations (torch.Tensor or None): Optional translations of shape (B, 3),
+                                                in voxel units (dz, dy, dx).
 
         Returns:
-        - transformed_volumes (torch.Tensor): (B, D, H, W)
+            torch.Tensor: Rotated volumes of shape (B, D, H, W).
         """
-        B, D, H, W = volumes.shape if volumes.dim() == 4 else volumes.shape[:4]
-        if volumes.dim() == 4:
-            volumes = volumes.unsqueeze(1)
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0)  # (1, D, H, W)
+        volume = volume.unsqueeze(0)     # (1, 1, D, H, W)
+        _, _, D, H, W = volume.shape
 
+        B = quaternions.shape[0]
+
+        # Repeat the single volume B times
+        volumes = volume.expand(B, -1, -1, -1, -1)  # (B, 1, D, H, W)
+
+        # Get rotation matrices
         R = self.quaternion_to_rotation_matrix_batch(quaternions)  # (B, 3, 3)
 
-        grid = self.grid_batch.to(volumes.device)  # (D*H*W, 3)
+        # Prepare and expand grid
+        grid = self.grid_batch.to(volume.device)  # (D*H*W, 3)
         grid = grid.unsqueeze(0).expand(B, -1, -1)  # (B, D*H*W, 3)
 
+        # Rotate the grid
         rotated_grid = torch.bmm(grid, R.transpose(1, 2))  # (B, D*H*W, 3)
 
+        # Apply translation if needed
         if translations is not None:
             t_norm = translations.clone()
             t_norm[:, 2] = 2 * translations[:, 0] / (D - 1)  # dz → z
@@ -699,9 +697,12 @@ class Tomography(dl.Application):
             t_norm[:, 0] = 2 * translations[:, 2] / (W - 1)  # dx → x
             rotated_grid -= t_norm[:, None, :]
 
+        # Reshape and clamp
         rotated_grid = rotated_grid.view(B, D, H, W, 3).clamp(-1, 1)
 
-        return F.grid_sample(volumes, rotated_grid, align_corners=True).squeeze(1)
+        # Sample and return
+        transformed = F.grid_sample(volumes, rotated_grid, align_corners=True)
+        return transformed.squeeze(1)  # (B, D, H, W)
 
     def full_forward_final(self, max_projections=None):
         """

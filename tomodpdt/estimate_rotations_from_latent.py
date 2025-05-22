@@ -46,6 +46,8 @@ def process_latent_space(
     - dict: Processed data with quaternions, coefficients, basis functions, peaks, and smoothed distances.
     """
 
+    device = z.device
+
     if not isinstance(frames, torch.Tensor):
         frames = torch.tensor(frames)
 
@@ -58,8 +60,6 @@ def process_latent_space(
             std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
             std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
             initial_axes = 'x' if std_x > std_y else 'y'
-
-    device = z.device
 
     # Compute distances and smooth them
     res = np.array(1 - compute_normalized_distances(z).cpu().numpy())
