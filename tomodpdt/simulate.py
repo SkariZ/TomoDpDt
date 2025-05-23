@@ -64,7 +64,9 @@ def create_data(
     size = object.shape[0]
 
     # Create quaternions
-    if rotation_case == 'noisy_sinusoidal':
+    if type(rotation_case) == np.ndarray:
+        quaternions = rotation_case
+    elif rotation_case == 'noisy_sinusoidal':
         quaternions = R.generate_noisy_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
     elif rotation_case == 'sinusoidal':
         quaternions = R.generate_sinusoidal_quaternion(duration=duration, samples=samples)
@@ -129,8 +131,8 @@ def create_data(
         volume_new = rotmod.apply_rotation(
             volume=object, 
             q=quaternions[i]
-            )       
-        
+            )
+
         # Compute the image
         image = imaging_model(volume_new)
 

@@ -110,6 +110,7 @@ def setup_optics(
         "fields": fields,
         "filtered_properties": filtered_properties,
         "padding_xy": padding_xy,
+        "resolution": resolution,
         }
 
 
@@ -130,11 +131,12 @@ class imaging_model(nn.Module):
         self.fields = optics_setup['fields']
         self.filtered_properties = optics_setup['filtered_properties']
         self.padding_xy = optics_setup['padding_xy']
+        self.resolution = optics_setup['resolution']
 
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # Set padding values 
-        self.padding_value = 1.33 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
+        self.padding_value = 0 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
         self.forward_case = 'loop'#'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
     def forward(self, object):
@@ -167,9 +169,9 @@ class imaging_model(nn.Module):
  
         with deeptrack.units.context(
             create_context(
-                xpixel=1e-7,
-                ypixel=1e-7,
-                zpixel=1e-7,
+                xpixel=self.resolution,
+                ypixel=self.resolution,
+                zpixel=self.resolution,
                 xscale=1,
                 yscale=1,
                 zscale=1,
@@ -180,6 +182,7 @@ class imaging_model(nn.Module):
                 object = torch.nn.functional.pad(
                     object.permute(2, 1, 0), (self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy, 0, 0), mode='constant', value=self.padding_value
                     ).permute(2, 1, 0)
+                
             if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat':
                 image = self.optics.get(object, self.limits, self.fields, **self.filtered_properties)
 

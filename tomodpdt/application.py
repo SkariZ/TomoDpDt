@@ -79,7 +79,7 @@ class Tomography(dl.Application):
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
-            'latent_loss': 0.5,
+            'latent_loss': 0.25,
             'rtv_loss': 0.5,
             'qv_loss': 10,
             'q0_loss': 100,
