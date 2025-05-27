@@ -85,7 +85,7 @@ class Tomography(dl.Application):
             'q0_loss': 100,
             'rtr_loss': 1,
             'rtr_trans_loss': 1,
-            'so_loss': 1
+            'so_loss': 1e-10
             }
         
         # Raise error if loss weights don´t contain all the necessary keys
@@ -103,14 +103,27 @@ class Tomography(dl.Application):
             self.imaging_model = projection
 
         # Set the grid for rotating the volume
-        x = torch.arange(self.N) - self.N / 2
-        self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
-        self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1).to(self._device)
+        #x = torch.arange(self.N) - self.N / 2
+        #self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
+        #self.grid = torch.stack([self.zz, self.yy, self.xx], dim=-1).to(self._device)
 
         # Set the grid for batch rotation
+        #lin = torch.linspace(-1, 1, self.N, device=self._device)
+        #x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
+        #self.grid_batch = torch.stack((z, y, x), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
+
+        # Store normalized voxel-space grid for single volume
+        x = torch.arange(self.N, device=self._device) - self.N / 2
+        xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
+        grid = torch.stack([zz, yy, xx], dim=-1)
+        self.grid = (grid / (self.N / 2)).clamp(-1, 1)  # Already normalized!
+        self.grid = self.grid.view(self.N, self.N, self.N, 3)  # Optional
+
+        # Store flat normalized grid for batch processing
         lin = torch.linspace(-1, 1, self.N, device=self._device)
-        x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
-        self.grid_batch = torch.stack((x, y, z), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
+        xx, yy, zz = torch.meshgrid(lin, lin, lin, indexing='ij')
+        grid_batch = torch.stack([zz, yy, xx], dim=-1)
+        self.grid_batch = grid_batch.view(-1, 3)  # Shape: (N^3, 3)
 
         # Placeholder
         self.normalize = False
@@ -601,47 +614,34 @@ class Tomography(dl.Application):
         return R
 
     def apply_rotation(self, volume, q, translations=None):
-        """
-        Rotate the object using quaternions.
+        q = q / q.norm()
+        R = self.quaternion_to_rotation_matrix(q)  # (3,3)
 
-        Parameters:
-        - volume (torch.Tensor): The volume to rotate.
-        - q (torch.Tensor): Quaternions representing rotations.
+        # Flatten normalized voxel-space grid
+        grid = self.grid.view(-1, 3)  # (N^3, 3)
 
-        Returns:
-        - rotated_volume (torch.Tensor): Rotated volume.
-        """
+        # Rotate grid by R
+        rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
 
-        # Convert quaternions to rotation matrix
-        q = q / q.norm()  # Ensure unit quaternion
-        R = self.quaternion_to_rotation_matrix(q)
-        
-        # Create a rotation grid
-        grid = self.grid.view(-1, 3)
-        rotated_grid = torch.matmul(grid, R.t()).view(self.N, self.N, self.N, 3)
-        
-        # Normalize the grid values to be in the range [-1, 1] for grid_sample
-        rotated_grid = (rotated_grid / (self.N / 2)).clamp(-1, 1).unsqueeze(0)
-        
-        # Apply translation if given
+        # If translation provided, normalize and subtract
         if translations is not None:
-            # Normalize voxel translations to [-1, 1]
-            t_norm = torch.zeros(3).to(rotated_grid.device)
-            t_norm[2] = 2 * translations[0] / (self.N - 1)  # z (depth)
-            t_norm[1] = 2 * translations[1] / (self.N - 1)  # y (height)
-            t_norm[0] = 2 * translations[2] / (self.N - 1)  # x (width)
-            rotated_grid -= t_norm.view(1, 1, 1, 3)  # broadcast over (N, N, N, 3)
+            t_norm = torch.zeros(3, device=rotated_grid.device)
+            t_norm[2] = 2 * translations[0] / (self.N - 1)  # dz normalized
+            t_norm[1] = 2 * translations[1] / (self.N - 1)  # dy normalized
+            t_norm[0] = 2 * translations[2] / (self.N - 1)  # dx normalized
 
-        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)  # Shape: (1, N, N, N, 3)
+            rotated_grid -= t_norm.view(1, 3)
 
-        # Apply grid_sample to rotate the volume
-        rotated_volume = F.grid_sample(
-            volume.unsqueeze(0).unsqueeze(0), 
-            rotated_grid, 
-            align_corners=True,
-            )
+        # Reshape and clamp
+        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
 
-        return rotated_volume.squeeze()
+        # Prepare volume: add batch and channel dims if needed
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
+
+        rotated_volume = F.grid_sample(volume, rotated_grid, align_corners=True)
+
+        return rotated_volume.squeeze(0).squeeze(0)
 
     def quaternion_to_rotation_matrix_batch(self, q):
         """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
@@ -671,7 +671,7 @@ class Tomography(dl.Application):
         """
         if volume.dim() == 3:
             volume = volume.unsqueeze(0)  # (1, D, H, W)
-        volume = volume.unsqueeze(0)     # (1, 1, D, H, W)
+        volume = volume.unsqueeze(0)  # (1, 1, D, H, W)
         _, _, D, H, W = volume.shape
 
         B = quaternions.shape[0]
@@ -679,30 +679,33 @@ class Tomography(dl.Application):
         # Repeat the single volume B times
         volumes = volume.expand(B, -1, -1, -1, -1)  # (B, 1, D, H, W)
 
-        # Get rotation matrices
-        R = self.quaternion_to_rotation_matrix_batch(quaternions)  # (B, 3, 3)
+        # Get rotation matrices batch: (B, 3, 3)
+        R = self.quaternion_to_rotation_matrix_batch(quaternions)
 
-        # Prepare and expand grid
-        grid = self.grid_batch.to(volume.device)  # (D*H*W, 3)
-        grid = grid.unsqueeze(0).expand(B, -1, -1)  # (B, D*H*W, 3)
+        # Prepare and expand normalized flat grid on correct device: (N³, 3)
+        grid = self.grid_batch.to(volume.device)  # (N³, 3)
+        grid = grid.unsqueeze(0).expand(B, -1, -1)  # (B, N³, 3)
 
-        # Rotate the grid
-        rotated_grid = torch.bmm(grid, R.transpose(1, 2))  # (B, D*H*W, 3)
+        # Rotate the grid points by batch rotation matrices: (B, N³, 3)
+        rotated_grid = torch.bmm(grid, R.transpose(1, 2))
 
-        # Apply translation if needed
+        # Apply translation if provided (convert voxel units to normalized coords)
         if translations is not None:
             t_norm = translations.clone()
-            t_norm[:, 2] = 2 * translations[:, 0] / (D - 1)  # dz → z
-            t_norm[:, 1] = 2 * translations[:, 1] / (H - 1)  # dy → y
-            t_norm[:, 0] = 2 * translations[:, 2] / (W - 1)  # dx → x
-            rotated_grid -= t_norm[:, None, :]
+            # Normalize each translation component to [-1, 1]
+            t_norm[:, 0] = 2 * translations[:, 0] / (D - 1)  # dz → z axis
+            t_norm[:, 1] = 2 * translations[:, 1] / (H - 1)  # dy → y axis
+            t_norm[:, 2] = 2 * translations[:, 2] / (W - 1)  # dx → x axis
+            rotated_grid -= t_norm[:, None, :]  # Broadcast over all points
 
-        # Reshape and clamp
+        # Reshape rotated grid back to (B, D, H, W, 3) for grid_sample
         rotated_grid = rotated_grid.view(B, D, H, W, 3).clamp(-1, 1)
 
-        # Sample and return
+        # Use grid_sample to sample volumes at rotated (and translated) coordinates
         transformed = F.grid_sample(volumes, rotated_grid, align_corners=True)
-        return transformed.squeeze(1)  # (B, D, H, W)
+
+        # Return rotated volumes as (B, D, H, W)
+        return transformed.squeeze(1)
 
     def full_forward_final(self, max_projections=None):
         """

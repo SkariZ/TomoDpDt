@@ -136,7 +136,7 @@ class imaging_model(nn.Module):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # Set padding values 
-        self.padding_value = 0 if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
+        self.padding_value = 0 #if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
         self.forward_case = 'loop'#'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
     def forward(self, object):

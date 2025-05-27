@@ -723,25 +723,25 @@ class Brightfield(Optics):
         pupils = [
             self._pupil_tensor(
                 volume.shape[:2], defocus=[1], include_aberration=False, device=volume.device, **kwargs
-            )[0],
+            )[0].to(volume.device),
             self._pupil_tensor(
                 volume.shape[:2],
                 defocus=[-z_limits[1]],
                 include_aberration=True,
                 device=volume.device,
                 **kwargs
-            )[0],
+            )[0].to(volume.device),
             self._pupil_tensor(
                 volume.shape[:2],
                 defocus=[0],
                 include_aberration=True,
                 device=volume.device,
                 **kwargs
-            )[0]
+            )[0].to(volume.device)
         ]
 
         # Transform the pupils to torch tensors.
-        pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
+        #pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
 
         pupil_step = torch.fft.fftshift(pupils[0])
 

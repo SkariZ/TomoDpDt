@@ -15,7 +15,8 @@ class ForwardModelSimple(nn.Module):
 
         x = torch.arange(self.N) - self.N / 2
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
-        self.grid = torch.stack([self.xx, self.yy, self.zz], dim=-1)
+        self.grid = torch.stack([self.zz, self.yy, self.xx], dim=-1)
+        self.grid = self.grid.view(-1, 3)
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.to_device()
@@ -65,14 +66,13 @@ class ForwardModelSimple(nn.Module):
         R = self.quaternion_to_rotation_matrix(q)
         
         # Create a rotation grid
-        grid = self.grid.view(-1, 3)
-        rotated_grid = torch.matmul(grid, R.t()).view(self.N, self.N, self.N, 3)
+        rotated_grid = torch.matmul(self.grid, R.t()).view(self.N, self.N, self.N, 3)
         
         # Normalize the grid values to be in the range [-1, 1] for grid_sample
         rotated_grid = (rotated_grid / (self.N / 2)).clamp(-1, 1)
         
         # Apply grid_sample to rotate the volume
-        rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True)
+        rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True, padding_mode='zeros')
         return rotated_volume.squeeze()
 
     def quaternion_to_rotation_matrix(self, q):

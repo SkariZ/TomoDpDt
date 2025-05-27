@@ -64,7 +64,7 @@ def create_data(
     size = object.shape[0]
 
     # Create quaternions
-    if type(rotation_case) == np.ndarray:
+    if isinstance(rotation_case,  np.ndarray) or isinstance(rotation_case, torch.Tensor):
         quaternions = rotation_case
     elif rotation_case == 'noisy_sinusoidal':
         quaternions = R.generate_noisy_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
@@ -152,9 +152,10 @@ def create_data(
 if __name__ == '__main__':
 
     object, quaternions, projections, imaging_model = create_data(
-        image_modality='darkfield', 
+        image_modality='sum_projection', 
         rotation_case='random_sinusoidal', 
-        samples=10
+        samples=10,
+        duration=0.1,
         )
 
     # Plot the object
