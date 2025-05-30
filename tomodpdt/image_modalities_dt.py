@@ -753,8 +753,8 @@ class Brightfield(Optics):
 
         z = z_limits[1]
         for i in index_iterator:
-            #light_in = light_in * pupil_step
-            light_in = torch.where(zero_plane[i], light_in, light_in * pupil_step)
+            light_in = light_in * pupil_step
+            #light_in = torch.where(zero_plane[i], light_in, light_in * pupil_step)
             #if zero_plane[i]:
             #    continue
             

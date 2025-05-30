@@ -32,7 +32,7 @@ class Tomography(dl.Application):
                  translation_maxmin = None,  # Max/min translation values, if None, no translation is applied.
                  optimizer = None,
                  volume_init = None,  # Initial guess for volume explicitly
-                 minibatch = 64,
+                 minibatch = 16,
                  loss_weights = None,
                  **kwargs):
         
@@ -68,24 +68,24 @@ class Tomography(dl.Application):
             self.optimize_translation = False
         
         # Set the optimizer (if provided) - not used as of now...
-        self.optimizer = optimizer if optimizer is not None else Adam(lr=1e-3)
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=2e-4)
         
         # Set volume initialization (if provided)
         self.volume_init = volume_init
 
-        # Set the minibatch size - default to 64 - can speed up training
+        # Set the minibatch size - default to 16 - can speed up training
         self.minibatch = minibatch
 
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
-            'latent_loss': 0.25,
+            'latent_loss': 0.01,
             'rtv_loss': 0.5,
             'qv_loss': 10,
             'q0_loss': 100,
             'rtr_loss': 1,
             'rtr_trans_loss': 1,
-            'so_loss': 1e-10
+            'so_loss': 1e5
             }
         
         # Raise error if loss weights don´t contain all the necessary keys
@@ -145,23 +145,30 @@ class Tomography(dl.Application):
 
         # Set the number of channels
         self.CH = projections.shape[1]
+         
+        # Normalize projections
+        if 'normalize' in kwargs and kwargs['normalize']:
+            # Compute the global min/max values per channel over the entire dataset
+            projections = self.per_channel_normalization(projections)
+            self.normalize = True
+        
+        if 'field_normalize' in kwargs and kwargs['field_normalize']:
+            # Normalize the projections per channel using precomputed global min/max scaling
+            projections = self.correctfield(projections)
 
         if self.CH > 0 and self.N >= 32:
             # Update the VAE model to handle multiple channels
-            vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2)
+            vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2, output_activation='sigmoid' if self.normalize else 'linear')
             self.vae_model.encoder = vae.encoder
             self.vae_model.decoder = vae.decoder
             self.vae_model.fc_mu = vae.fc_mu
             self.vae_model.fc_var = vae.fc_var
             self.vae_model.fc_dec = vae.fc_dec
             self.vae_model.beta = 0.025
-            
-        # Normalize projections
-        if 'normalize' in kwargs and kwargs['normalize']:
-            # Compute the global min/max values per channel over the entire dataset
-            projections = self.per_channel_normalization(projections)
-            self.normalize = True
-
+            if not self.normalize:
+                self.vae_model.reconstruction_loss = torch.nn.L1Loss()
+                self.vae_model.beta = 1e-5
+        
         # Train the VAE model if not already trained
         if self.vae_model.training:
             self.train_vae(projections, **kwargs)
@@ -205,6 +212,11 @@ class Tomography(dl.Application):
         @self.optimizer.params
         def params(self):
             return self.parameters()
+        
+        # if...
+        self.V0 = self.imaging_model(self.volume*0).detach()
+        self.V0_phase = torch.median(torch.angle(self.V0))
+        self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
 
     def compute_global_min_max(self, projections):
         """
@@ -234,6 +246,24 @@ class Tomography(dl.Application):
             projections[:, i] = projections[:, i] * (self.global_max[i] - self.global_min[i] + 1e-6) + self.global_min[i]
         return projections
     
+    def correctfield(self, field, n_iter=3):
+        """
+        Correct field to have a mean phase of 0 and a mean absolute value of 1.
+        """
+
+        if field.dtype == torch.float32:
+            field = field.to(torch.complex64)
+
+        f_new = field.clone()
+
+        # Normalize with mean of absolute value.
+        f_new = f_new / torch.mean(torch.abs(f_new))
+
+        for _ in range(n_iter):
+            f_new = f_new * torch.exp(-1j * torch.median(torch.angle(f_new)))
+
+        return f_new
+
     def train_vae(self, projections, **kwargs):
         """
         Train the VAE model on the given projections.
@@ -284,6 +314,8 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
             cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
             cloud = cloud / cloud.max()
+            # Cap values to 0 - 0.1
+            cloud = torch.clamp(cloud, 0, 0.1)
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
@@ -349,6 +381,13 @@ class Tomography(dl.Application):
                 
                 # If two channels are present, concatenate them - for complex valued projections
                 elif self.CH > 1 and estimated_projections.dtype == torch.complex64:
+
+                    estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)  # Phase correction
+                    estimated_projections = estimated_projections - self.V0  + 1 # Subtract the initial volume to remove the background
+
+                    #estimated_projections = self.correctfield(estimated_projections)
+
+                    # Concatenate real and imaginary parts along the last dimension
                     estimated_projections = torch.concatenate(
                         (estimated_projections.real, estimated_projections.imag),
                         axis=-1)
@@ -438,18 +477,23 @@ class Tomography(dl.Application):
         rtv_loss = self.total_variation_regularization(self.volume)
 
         # This is the predicted quaternions
-        quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
+        if self.rotation_optim_case == 'quaternion' or self.rotation_optim_case == 'basis' and self.rotation_params.requires_grad:
+            quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
 
         # This is the predicted translations
-        translations_pred = self.get_translations(self.translation_params)[idx_batch] if self.optimize_translation else None
+        if self.optimize_translation and self.translation_params is not None:
+            translations_pred = self.get_translations(self.translation_params)[idx_batch] if self.optimize_translation else None
 
         # Compute the quaternion validity loss
-        qv_loss = self.quaternion_validity_loss(
-            quaternions_pred
-            )
+        if self.rotation_params.requires_grad:
+            qv_loss = self.quaternion_validity_loss(
+                quaternions_pred
+                )
+        else:
+            qv_loss = torch.tensor(0.0, device=self._device)
 
-        # Compute the q0 constraint loss if 0 is in the indices
-        if torch.sum(idx_batch == 0) > 0:
+        # Compute the q0 constraint loss if 0 is in the indices and gradients for rotation parameters are enabled
+        if torch.sum(idx_batch == 0) > 0 and self.rotation_params.requires_grad:
             q0_loss = self.q0_constraint_loss(
                 quaternions_pred[idx_batch == 0]
                 )
@@ -490,13 +534,13 @@ class Tomography(dl.Application):
             so_loss *= loss_weights['so_loss']
         else:
             proj_loss *= 10
-            latent_loss *= 0.5
+            latent_loss *= 0.01
             rtv_loss *= 0.5
             qv_loss *= 10
             q0_loss *= 100
             rtr_loss *= 1
             rtr_trans_loss *= 1
-            so_loss *= 1
+            so_loss *= 1e5
         
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss
 
@@ -707,7 +751,7 @@ class Tomography(dl.Application):
         # Return rotated volumes as (B, D, H, W)
         return transformed.squeeze(1)
 
-    def full_forward_final(self, max_projections=None):
+    def full_forward_final(self, max_projections=None, rand_idx=False, idx=None):
         """
         Forward pass of the model.
 
@@ -741,9 +785,20 @@ class Tomography(dl.Application):
         self.global_max = self.global_max.to(self._device)
 
         # If max_projections is not None, set the number of projections to max_projections. Saves time and memory.
-        if max_projections is not None:
+        if max_projections is not None and max_projections < quaternions.shape[0] and rand_idx is False and idx is None:
             quaternions = quaternions[:max_projections]
             translations = translations[:max_projections] if translations is not None else None
+        # If idx is provided, select the quaternions and translations for the given indices
+        elif idx is not None:
+            quaternions = quaternions[idx]
+            translations = translations[idx] if translations is not None else None
+        elif rand_idx:
+            # If rand_idx is True, randomly select max_projections indices from the quaternions
+            if max_projections is None or max_projections > quaternions.shape[0]:
+                max_projections = quaternions.shape[0]
+            rand_indices = torch.randperm(quaternions.shape[0])[:max_projections]
+            quaternions = quaternions[rand_indices]
+            translations = translations[rand_indices] if translations is not None else None
 
         # Initialize the estimated projections
         estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
@@ -770,6 +825,12 @@ class Tomography(dl.Application):
 
                 # If two channels are present, concatenate them - for complex valued projections
                 elif self.CH > 1 and estimated_projection.dtype == torch.complex64:
+
+                    estimated_projection = estimated_projection * torch.exp(-1j * self.V0_phase)  # Phase correction
+                    estimated_projection = estimated_projection - self.V0 + 1  # Subtract the initial volume to remove the background
+                    
+                    #estimated_projection = self.correctfield(estimated_projection)
+
                     estimated_projection = torch.concatenate(
                         (estimated_projection.real, estimated_projection.imag)
                         , axis=-1)
