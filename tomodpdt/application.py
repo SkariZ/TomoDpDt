@@ -167,7 +167,7 @@ class Tomography(dl.Application):
             self.vae_model.beta = 0.025
             if not self.normalize:
                 self.vae_model.reconstruction_loss = torch.nn.L1Loss()
-                self.vae_model.beta = 1e-5
+                self.vae_model.beta = 1e-4
         
         # Train the VAE model if not already trained
         if self.vae_model.training:
@@ -215,8 +215,9 @@ class Tomography(dl.Application):
         
         # if...
         self.V0 = self.imaging_model(self.volume*0).detach()
-        self.V0_phase = torch.median(torch.angle(self.V0))
-        self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
+        if self.V0.dtype == torch.complex64:
+            self.V0_phase = torch.median(torch.angle(self.V0))
+            self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
 
     def compute_global_min_max(self, projections):
         """
@@ -444,12 +445,8 @@ class Tomography(dl.Application):
             "so_loss": so_loss,
             }
         
-        # Remove these losses from the dictionary if they are exactly 0 for nicer logging/plotting
-        if rtr_trans_loss == 0: 
-            loss.pop('rtr_trans_loss')
-
-        if rtr_loss == 0: 
-            loss.pop('rtr_loss')
+        # Remove the losses that are not used i.e they are 0 for nice logging.
+        loss = {k: v for k, v in loss.items() if v.item() > 0}
 
         for name, v in loss.items():
             self.log(
@@ -501,7 +498,7 @@ class Tomography(dl.Application):
             q0_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the rotational trajectory regularization term if the indices are consecutive and optimization case is 'quaternion' and not 'basis'
-        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion':
+        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
             rtr_loss = self.rotational_trajectory_regularization(
                 quaternions_pred
                 )
@@ -906,13 +903,32 @@ class Tomography(dl.Application):
         for param in self.parameters():
             param.requires_grad = requires_grad
 
+    def toggle_gradients_rotation_translation(self, requires_grad):
+        """
+        Toggle the requires_grad attribute of the rotation and translation parameters.
+        """
+        self.rotation_params.requires_grad = requires_grad
+        if self.optimize_translation and self.translation_params is not None:
+            self.translation_params.requires_grad = requires_grad
+
     def toggle_gradients_quaternion(self, requires_grad):
         """
         Toggle the requires_grad attribute of the quaternion parameters.
         """
         self.rotation_params.requires_grad = requires_grad
+
+    def toggle_gradients_translation(self, requires_grad):
+        """
+        Toggle the requires_grad attribute of the translation parameters.
+        """
         if self.optimize_translation and self.translation_params is not None:
             self.translation_params.requires_grad = requires_grad
+
+    def toggle_gradients_volume(self, requires_grad):
+        """
+        Toggle the requires_grad attribute of the volume parameters.
+        """
+        self.volume.requires_grad = requires_grad
 
     def swap_rotation_axis(self):
         """ 

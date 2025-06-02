@@ -74,6 +74,45 @@ class ForwardModelSimple(nn.Module):
         # Apply grid_sample to rotate the volume
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True, padding_mode='zeros')
         return rotated_volume.squeeze()
+    
+    def apply_rotation_translation(self, volume, q, translations=None):
+        """
+        Rotate the object using quaternions and apply translations.
+        Parameters:
+        - volume (torch.Tensor): The volume to rotate.
+        - q (torch.Tensor): Quaternions representing rotations.
+        - translations (torch.Tensor, optional): Translations to apply after rotation.
+        Returns:
+        - rotated_volume (torch.Tensor): Rotated volume.
+        """
+        q = q / q.norm()
+        R = self.quaternion_to_rotation_matrix(q)  # (3,3)
+
+        # Flatten normalized voxel-space grid
+        grid = self.grid.view(-1, 3)  # (N^3, 3)
+
+        # Rotate grid by R
+        rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
+
+        # If translation provided, normalize and subtract
+        if translations is not None:
+            t_norm = torch.zeros(3, device=rotated_grid.device)
+            t_norm[2] = 2 * translations[0] / (self.N - 1)  # dz normalized
+            t_norm[1] = 2 * translations[1] / (self.N - 1)  # dy normalized
+            t_norm[0] = 2 * translations[2] / (self.N - 1)  # dx normalized
+
+            rotated_grid -= t_norm.view(1, 3)
+
+        # Reshape and clamp
+        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
+
+        # Prepare volume: add batch and channel dims if needed
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
+
+        rotated_volume = F.grid_sample(volume, rotated_grid, align_corners=True)
+        rotated_volume = rotated_volume.squeeze(0).squeeze(0)  # Remove batch and channel dims
+        return rotated_volume
 
     def quaternion_to_rotation_matrix(self, q):
         """

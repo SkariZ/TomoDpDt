@@ -4,10 +4,11 @@ from torchvision import transforms
 import matplotlib.pyplot as plt
 import numpy as np
 from scipy.ndimage import rotate
+import cv2
 
 
 class MaskRCNNHandler:
-    def __init__(self, model_type='maskrcnn_resnet50_fpn', pretrained=True, device=None, score_threshold=0.3):
+    def __init__(self, device=None, score_threshold=0.3, single_object=True):
         """
         Initializes the Mask R-CNN model and sets up the device.
         
@@ -20,7 +21,7 @@ class MaskRCNNHandler:
         self.device = device if device else ('cuda' if torch.cuda.is_available() else 'cpu')
         
         # Load pre-trained model
-        self.model = torchvision.models.detection.maskrcnn_resnet50_fpn(pretrained=pretrained)
+        self.model = torchvision.models.detection.maskrcnn_resnet50_fpn(weights=torchvision.models.detection.MaskRCNN_ResNet50_FPN_Weights)
         self.model.to(self.device).eval()  # Move model to the specified device and set to eval mode
         
         # Transform to convert image to tensor
@@ -28,6 +29,9 @@ class MaskRCNNHandler:
 
         # Threshold for object detection
         self.score_threshold = score_threshold
+
+        # Flag to handle single object detection
+        self.single_object = single_object
 
     def _check_input_format(self, image):
         """
@@ -86,6 +90,12 @@ class MaskRCNNHandler:
         boxes = boxes[high_confidence_idxs]
         centers = (boxes[:, :2] + boxes[:, 2:]) / 2
 
+        if self.single_object and len(masks) > 0:
+            # If single object mode is enabled, take the one with the highest score
+            best_idx = scores[high_confidence_idxs].argmax()
+            masks = masks[best_idx].unsqueeze(0)
+            boxes = boxes[best_idx].unsqueeze(0)
+            centers = centers[best_idx].unsqueeze(0)
         return masks, boxes, centers
 
     def fine_tune(self, dataset, epochs=10, learning_rate=0.005):
@@ -155,6 +165,92 @@ class MaskRCNNHandler:
                                               linewidth=2, edgecolor='g', facecolor='none'))
 
         plt.show()
+
+
+class ObjectTracker:
+    def __init__(self, frame_shape):
+        self.frame_h, self.frame_w = frame_shape[:2]
+        self.initialized = False
+        # State: [center_x, center_y, velocity_x, velocity_y]
+        self.state = np.zeros((4, 1), dtype=np.float32)
+        self.P = np.eye(4, dtype=np.float32) * 1000  # Covariance
+        self.F = np.array([[1, 0, 1, 0],  # State transition matrix
+                           [0, 1, 0, 1],
+                           [0, 0, 1, 0],
+                           [0, 0, 0, 1]], dtype=np.float32)
+        self.H = np.array([[1, 0, 0, 0],  # Measurement matrix (we observe centers)
+                           [0, 1, 0, 0]], dtype=np.float32)
+        self.R = np.eye(2, dtype=np.float32) * 10  # Measurement noise
+        self.Q = np.eye(4, dtype=np.float32)  # Process noise
+
+    def update(self, detection):
+        """
+        Update the tracker with a bounding box detection or predict if None.
+        detection: tuple (x, y, w, h) or None
+        Returns:
+            est_center_x, est_center_y
+        """
+        if detection is not None:
+            x, y, w, h = detection
+            meas = np.array([[np.float32(x + w / 2)], [np.float32(y + h / 2)]])
+            if not self.initialized:
+                self.state[:2] = meas
+                self.initialized = True
+            # Prediction step
+            self.state = self.F @ self.state
+            self.P = self.F @ self.P @ self.F.T + self.Q
+            # Update step
+            S = self.H @ self.P @ self.H.T + self.R
+            K = self.P @ self.H.T @ np.linalg.inv(S)
+            y_residual = meas - (self.H @ self.state)
+            self.state = self.state + K @ y_residual
+            self.P = (np.eye(4) - K @ self.H) @ self.P
+        else:
+            # No detection, just predict
+            self.state = self.F @ self.state
+            self.P = self.F @ self.P @ self.F.T + self.Q
+
+        est_x, est_y = self.state[0, 0], self.state[1, 0]
+        return est_x, est_y
+
+    def centralize_frame(self, frame, center_x, center_y):
+        h, w = frame.shape[:2]
+        if center_x is None or center_y is None:
+            return frame.copy()
+        shift_x = int((w / 2) - center_x)
+        shift_y = int((h / 2) - center_y)
+        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        centered = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
+        return centered
+
+
+
+def track_and_centralize(frames, maskrcnn):
+    tracker = ObjectTracker(frame_shape=frames[0].shape)
+    centralized_frames = []
+
+    est_xy = []
+    for idx, frame in enumerate(frames):
+        # Get detection from Mask R-CNN
+        masks, boxes, _ = maskrcnn.predict(frame)
+
+        if len(boxes) > 0:
+            box = boxes[0].cpu().numpy()
+            x1, y1, x2, y2 = box
+            w, h = x2 - x1, y2 - y1
+            detection = (x1, y1, w, h)
+        else:
+            detection = None
+
+        # Update tracker to get estimated center
+        est_x, est_y = tracker.update(detection)
+        est_xy.append((est_x, est_y))
+        # Centralize the frame based on the estimated center
+        centralized_frame = tracker.centralize_frame(frame, est_x, est_y)
+        centralized_frames.append(centralized_frame)
+
+    return centralized_frames, est_xy
+
 
 
 def rotate_image(image, angle):

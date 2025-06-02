@@ -225,6 +225,7 @@ def compute_optical_flow(frames):
 
     return np.vstack(flow_vectors)
 
+
 def align_frames_cv2(frames):
     # Ensure frames are in the correct format
     if frames.ndim == 3:

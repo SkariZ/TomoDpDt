@@ -64,7 +64,11 @@ def process_latent_space(
     # Compute distances and smooth them
     res = np.array(1 - compute_normalized_distances(z).cpu().numpy())
     res = res * np.linspace(0.95, 1, len(res))
-    res = savgol_filter(res, window_length=window_length, polyorder=polyorder)
+    try:
+        res = savgol_filter(res, window_length=window_length, polyorder=polyorder)
+    except:
+        pass
+
     res /= max(res)
 
     # Adjust peak detection parameters if an initial period estimate is given
@@ -240,7 +244,12 @@ def classify_rotation_axis(flow_vectors):
     displacements = flow_vectors[:, 2:]  # (dx, dy)
 
     # PCA using Singular Value Decomposition (SVD)
-    _, _, Vt = svd(displacements, full_matrices=False)
+    try:
+        _, _, Vt = svd(displacements, full_matrices=False)
+    except np.linalg.LinAlgError:
+        # If SVD fails, fallback to simple classification
+        return "x" if np.mean(displacements[:, 0]) > np.mean(displacements[:, 1]) else "y"
+    
     principal_axis = Vt[0]  # First principal component
 
     # Classify based on the dominant motion direction
