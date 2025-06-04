@@ -196,9 +196,11 @@ class ObjectTracker:
             if not self.initialized:
                 self.state[:2] = meas
                 self.initialized = True
+
             # Prediction step
             self.state = self.F @ self.state
             self.P = self.F @ self.P @ self.F.T + self.Q
+
             # Update step
             S = self.H @ self.P @ self.H.T + self.R
             K = self.P @ self.H.T @ np.linalg.inv(S)
@@ -212,17 +214,28 @@ class ObjectTracker:
 
         est_x, est_y = self.state[0, 0], self.state[1, 0]
         return est_x, est_y
+    
+    def centralize_frame(self, frame, x, y):
 
-    def centralize_frame(self, frame, center_x, center_y):
+        frame = frame.cpu().numpy() if isinstance(frame, torch.Tensor) else frame
+
         h, w = frame.shape[:2]
-        if center_x is None or center_y is None:
-            return frame.copy()
-        shift_x = int((w / 2) - center_x)
-        shift_y = int((h / 2) - center_y)
-        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
-        centered = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=(0,0,0))
-        return centered
+        if x is None or y is None:
+            return frame
 
+        # Calculate shift required to move (x, y) to (w/2, h/2)
+        shift_x = (w / 2) - x
+        shift_y = (h / 2) - y
+
+        # Apply shift to the entire frame
+        M = np.float32([[1, 0, shift_x], [0, 1, shift_y]])
+        centralized_frame = cv2.warpAffine(frame, M, (w, h), borderMode=cv2.BORDER_CONSTANT, borderValue=0)
+
+        # Convert back to tensor if needed
+        if isinstance(frame, torch.Tensor):
+            centralized_frame = torch.tensor(centralized_frame, dtype=torch.float32).to(frame.device)
+
+        return centralized_frame
 
 
 def track_and_centralize(frames, maskrcnn):
@@ -245,12 +258,24 @@ def track_and_centralize(frames, maskrcnn):
         # Update tracker to get estimated center
         est_x, est_y = tracker.update(detection)
         est_xy.append((est_x, est_y))
-        # Centralize the frame based on the estimated center
-        centralized_frame = tracker.centralize_frame(frame, est_x, est_y)
-        centralized_frames.append(centralized_frame)
+
+    # Centralize each frame based on the estimated center
+    for idx, frame in enumerate(frames):
+        est_x, est_y = est_xy[idx]
+
+        # If the estimated center is None, skip centralization
+        if est_x is None or est_y is None:
+            centralized_frames.append(frame)
+            continue
+
+        centralized_frames.append(tracker.centralize_frame(frame, est_x, est_y))
+
+    est_xy = np.array(est_xy)
+
+    # Convert centralized frames to numpy arrays if they are tensors
+    centralized_frames = [frame.cpu().numpy() if isinstance(frame, torch.Tensor) else frame for frame in centralized_frames]
 
     return centralized_frames, est_xy
-
 
 
 def rotate_image(image, angle):

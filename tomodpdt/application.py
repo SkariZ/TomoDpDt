@@ -34,6 +34,9 @@ class Tomography(dl.Application):
                  volume_init = None,  # Initial guess for volume explicitly
                  minibatch = 16,
                  loss_weights = None,
+                 learning_rate_volume: float = 3e-4,
+                 learning_rate_rotation: float = 1e-3,
+                 learning_rate_translation: float = 1e-3,
                  **kwargs):
         
         # Set volume size
@@ -67,9 +70,6 @@ class Tomography(dl.Application):
             self.translation_maxmin = None
             self.optimize_translation = False
         
-        # Set the optimizer (if provided) - not used as of now...
-        self.optimizer = optimizer if optimizer is not None else Adam(lr=2e-4)
-        
         # Set volume initialization (if provided)
         self.volume_init = volume_init
 
@@ -80,11 +80,11 @@ class Tomography(dl.Application):
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
             'latent_loss': 0.01,
-            'rtv_loss': 0.5,
+            'rtv_loss': 1,
             'qv_loss': 10,
             'q0_loss': 100,
-            'rtr_loss': 1,
-            'rtr_trans_loss': 1,
+            'rtr_loss': 10,
+            'rtr_trans_loss': 10,
             'so_loss': 1e5
             }
         
@@ -92,6 +92,14 @@ class Tomography(dl.Application):
         if not all(k in self.loss_weights for k in ['proj_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
         
+        # Set the learning rates for volume, rotation, and translation
+        self.learning_rate_volume = learning_rate_volume
+        self.learning_rate_rotation = learning_rate_rotation
+        self.learning_rate_translation = learning_rate_translation
+
+        # Set the optimizer (if provided) or default to Adam with learning rate 5e-4
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=self.learning_rate_volume)
+
         # Call the superclass constructor
         super().__init__(**kwargs)
 
@@ -167,7 +175,7 @@ class Tomography(dl.Application):
             self.vae_model.beta = 0.025
             if not self.normalize:
                 self.vae_model.reconstruction_loss = torch.nn.L1Loss()
-                self.vae_model.beta = 1e-4
+                self.vae_model.beta = 1e-5
         
         # Train the VAE model if not already trained
         if self.vae_model.training:
@@ -213,11 +221,25 @@ class Tomography(dl.Application):
         def params(self):
             return self.parameters()
         
-        # if...
+        # C ompute the initial volume V0 for subtraction of the background (for field correction)
         self.V0 = self.imaging_model(self.volume*0).detach()
         if self.V0.dtype == torch.complex64:
             self.V0_phase = torch.median(torch.angle(self.V0))
             self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
+
+    def configure_optimizers(self):
+        param_groups = []
+
+        if any(p.requires_grad for p in [self.volume]):
+            param_groups.append({'params': [self.volume], 'lr': self.learning_rate_volume})
+
+        if any(p.requires_grad for p in [self.rotation_params]):
+            param_groups.append({'params': [self.rotation_params], 'lr': self.learning_rate_rotation})
+
+        if any(p.requires_grad for p in [self.translation_params]):
+            param_groups.append({'params': [self.translation_params], 'lr': self.learning_rate_translation})
+
+        return torch.optim.Adam(param_groups)
 
     def compute_global_min_max(self, projections):
         """
@@ -247,7 +269,7 @@ class Tomography(dl.Application):
             projections[:, i] = projections[:, i] * (self.global_max[i] - self.global_min[i] + 1e-6) + self.global_min[i]
         return projections
     
-    def correctfield(self, field, n_iter=3):
+    def correctfield(self, field, n_iter=5):
         """
         Correct field to have a mean phase of 0 and a mean absolute value of 1.
         """
@@ -360,7 +382,6 @@ class Tomography(dl.Application):
 
         indexes = torch.arange(0, batch_size)
         b_idx = [indexes[i:i + self.minibatch] for i in range(0, len(indexes), self.minibatch)]
-        # volumes = torch.stack([volume.clone() for _ in range(self.minibatch)])
 
         for b in b_idx:
             # Apply rotations to a single volume using a batch of quaternions
@@ -471,10 +492,13 @@ class Tomography(dl.Application):
         latent_loss = F.l1_loss(latent_space, self.latent[idx_batch])
 
         # Compute the total variation regularization term
-        rtv_loss = self.total_variation_regularization(self.volume)
+        if self.volume.requires_grad:
+            rtv_loss = self.total_variation_regularization(self.volume)
+        else:
+            rtv_loss = torch.tensor(0.0, device=self._device)
 
         # This is the predicted quaternions
-        if self.rotation_optim_case == 'quaternion' or self.rotation_optim_case == 'basis' and self.rotation_params.requires_grad:
+        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion' or self.rotation_optim_case == 'basis':
             quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
 
         # This is the predicted translations
@@ -490,7 +514,7 @@ class Tomography(dl.Application):
             qv_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the q0 constraint loss if 0 is in the indices and gradients for rotation parameters are enabled
-        if torch.sum(idx_batch == 0) > 0 and self.rotation_params.requires_grad:
+        if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0:
             q0_loss = self.q0_constraint_loss(
                 quaternions_pred[idx_batch == 0]
                 )
@@ -498,7 +522,7 @@ class Tomography(dl.Application):
             q0_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the rotational trajectory regularization term if the indices are consecutive and optimization case is 'quaternion' and not 'basis'
-        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
+        if self.rotation_params.requires_grad and torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion':
             rtr_loss = self.rotational_trajectory_regularization(
                 quaternions_pred
                 )
@@ -506,7 +530,7 @@ class Tomography(dl.Application):
             rtr_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the trajectory regularization term for the translations
-        if self.optimize_translation and translations_pred is not None and torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1:
+        if self.translation_params.requires_grad and self.optimize_translation and translations_pred is not None and torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1:
             rtr_trans_loss = self.rotational_trajectory_regularization(
                 translations_pred
                 )
@@ -514,10 +538,13 @@ class Tomography(dl.Application):
             rtr_trans_loss = torch.tensor(0.0, device=self._device)
 
         # Compute the strictly over loss
-        if self.initial_volume == 'refraction':
-            so_loss = self.strictly_over_loss(self.volume)
+        if self.volume.requires_grad:
+            if self.initial_volume == 'refraction':
+                so_loss = self.strictly_over_loss(self.volume)
+            else:
+                so_loss = self.strictly_over_loss(self.volume, value=0)
         else:
-            so_loss = self.strictly_over_loss(self.volume, value=0)
+            so_loss = torch.tensor(0.0, device=self._device)
 
         # Scale the losses
         if loss_weights is not None and isinstance(loss_weights, dict):
@@ -532,11 +559,11 @@ class Tomography(dl.Application):
         else:
             proj_loss *= 10
             latent_loss *= 0.01
-            rtv_loss *= 0.5
+            rtv_loss *= 1
             qv_loss *= 10
             q0_loss *= 100
-            rtr_loss *= 1
-            rtr_trans_loss *= 1
+            rtr_loss *= 10
+            rtr_trans_loss *= 10
             so_loss *= 1e5
         
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss

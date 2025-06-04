@@ -136,10 +136,12 @@ class imaging_model(nn.Module):
         self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 
         # Set padding values 
-        self.padding_value = 0 #if self.microscopy_regime == 'brightfield' or self.microscopy_regime == 'darkfield' or self.microscopy_regime == 'iscat' else 0
+        self.padding_value = 0
+
+        # Determine the forward case based on the microscopy regime
         self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
-    def forward(self, object):
+    def forward(self, object, vmap=True):
         self.limits = self.limits.to(object.device)
         self.fields = self.fields.to(object.device)
 
@@ -148,7 +150,7 @@ class imaging_model(nn.Module):
         elif object.dim() == 4 and object.size(0) == 1:
             return self.imaging_step(object.squeeze(0)).unsqueeze(0)
 
-        if self.forward_case == 'vmap':
+        if self.forward_case == 'vmap' and vmap:
             imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
             # Do a batch processing with multiple objects
             return imaging_vmap(object)
