@@ -35,8 +35,8 @@ class Tomography(dl.Application):
                  minibatch = 16,
                  loss_weights = None,
                  learning_rate_volume: float = 3e-4,
-                 learning_rate_rotation: float = 1e-3,
-                 learning_rate_translation: float = 1e-3,
+                 learning_rate_rotation: float = 8e-4,
+                 learning_rate_translation: float = 8e-4,
                  **kwargs):
         
         # Set volume size
@@ -135,6 +135,7 @@ class Tomography(dl.Application):
 
         # Placeholder
         self.normalize = False
+
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -654,7 +655,7 @@ class Tomography(dl.Application):
 
         if rotations is None:
             rotations = self.rotation_params
-
+        
         if self.rotation_optim_case == 'quaternion':
             return rotations
         elif self.rotation_optim_case == 'basis':

@@ -18,8 +18,8 @@ def process_latent_space(
     max_peaks=7,
     min_peaks=2,
     prominence=0.5,
-    height_factor=0.775,
-    basis_functions=12,
+    height_factor=0.75,
+    basis_functions=15,
     intial_axes_case='cv2_flow',
     **kwargs
 ):
@@ -149,18 +149,31 @@ def process_latent_space(
         }
 
 
-def generate_basis_functions(N_points, num_basis):
-    """Generate basis functions for time points."""
+def generate_basis_functions(N_points, num_basis, t_start=0.1, t_end=0.9):
+    """
+    Generate smooth, fixed-frequency sine/cosine basis functions with a constant term.
 
-    t = torch.linspace(0.2, 1, N_points).unsqueeze(1)  # Time points (num_points, 1)
+    Args:
+        N_points (int): Number of time points.
+        num_basis (int): Total number of basis functions (including constant term).
+        t_start (float): Start of time interval.
+        t_end (float): End of time interval.
 
-    basis = torch.cat(
-        [torch.ones_like(t)] +  # Constant term
-        [torch.cos(2 * torch.pi * (k + 1) * t) for k in range(num_basis // 2)] +
-        [torch.sin(2 * torch.pi * (k + 1) * t) for k in range(num_basis // 2)],
-        dim=1
-    )
-    return basis
+    Returns:
+        torch.Tensor: (N_points, num_basis) basis function matrix.
+    """
+    t = torch.linspace(t_start, t_end, N_points).unsqueeze(1)  # (N_points, 1)
+
+    n_harmonics = (num_basis - 1) // 2
+
+    cos_terms = [torch.cos(2 * torch.pi * (k + 1) * t) for k in range(n_harmonics)]
+    sin_terms = [torch.sin(2 * torch.pi * (k + 1) * t) for k in range(n_harmonics)]
+    const_term = [torch.ones_like(t)]
+
+    basis = torch.cat(cos_terms + sin_terms + const_term, dim=1)
+
+    # Truncate if num_basis is not odd (e.g., to remove extra sine/cosine)
+    return basis[:, :num_basis]
 
 
 def initialize_basis_functions(basis, quaternions):
