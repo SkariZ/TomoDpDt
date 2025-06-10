@@ -34,7 +34,7 @@ class Tomography(dl.Application):
                  volume_init = None,  # Initial guess for volume explicitly
                  minibatch = 16,
                  loss_weights = None,
-                 learning_rate_volume: float = 3e-4,
+                 learning_rate_volume: float = 5e-4,
                  learning_rate_rotation: float = 8e-4,
                  learning_rate_translation: float = 8e-4,
                  **kwargs):
@@ -79,7 +79,7 @@ class Tomography(dl.Application):
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
-            'latent_loss': 0.01,
+            'latent_loss': 0.05,
             'rtv_loss': 1,
             'qv_loss': 10,
             'q0_loss': 100,
@@ -212,7 +212,8 @@ class Tomography(dl.Application):
         if self.optimize_translation:
             self.initialize_translation(N=self.rotation_initial_dict["peaks"][-1].item())
         else:
-            self.translation_params = None
+            self.initialize_translation(N=self.rotation_initial_dict["peaks"][-1].item())
+            self.toggle_gradients_rotation_translation(False)  # Freeze translation parameters if not optimizing
 
         # Setting frames to the number of rotations
         self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]

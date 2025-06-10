@@ -115,6 +115,11 @@ def create_data(
     if imaging_model.microscopy_regime == 'brightfield' and imaging_model.filtered_properties['return_field'] == True:
         ch = 2
 
+        V0 = imaging_model(torch.tensor(volume)*0).to(DEV)  # Background field
+        V0_phase = torch.median(torch.angle(V0)).to(DEV)  # Phase of the background field
+        V0 = V0 * torch.exp(-1j * V0_phase) # Phase correction
+        V0 = V0.to(DEV)
+
     # Create a rotation model for the object
     rotmod = FM.ForwardModelSimple(N=size)
 
@@ -140,6 +145,10 @@ def create_data(
             projections[i, 0] = image.cpu().squeeze()
 
         elif imaging_model.microscopy_regime in ['brightfield'] and ch == 2:
+
+            image = image * torch.exp(-1j * V0_phase)  # Phase correction
+            image = image - V0 + 1 # Background correction
+
             projections[i, 0] = image.real.cpu().squeeze()
             projections[i, 1] = image.imag.cpu().squeeze()
 
