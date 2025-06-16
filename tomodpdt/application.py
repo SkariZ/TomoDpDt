@@ -79,10 +79,10 @@ class Tomography(dl.Application):
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
-            'latent_loss': 0.05,
+            'latent_loss': 0.2,
             'rtv_loss': 1,
             'qv_loss': 10,
-            'q0_loss': 100,
+            'q0_loss': 0,
             'rtr_loss': 10,
             'rtr_trans_loss': 10,
             'so_loss': 1e5
@@ -241,7 +241,19 @@ class Tomography(dl.Application):
         if any(p.requires_grad for p in [self.translation_params]):
             param_groups.append({'params': [self.translation_params], 'lr': self.learning_rate_translation})
 
-        return torch.optim.Adam(param_groups)
+        # Schedular for the optimizer
+        if len(param_groups) == 0:
+            raise ValueError("No parameters to optimize. Check if any parameters have requires_grad=True.")
+        else:
+            optimizer = torch.optim.Adam(param_groups)
+
+            scheduler = {
+                'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
+                    optimizer, mode='min', factor=0.7, patience=10, threshold=5e-3,
+                ),
+                'monitor': 'train_total_loss',
+            }
+            return [optimizer], [scheduler]
 
     def compute_global_min_max(self, projections):
         """
@@ -966,6 +978,63 @@ class Tomography(dl.Application):
         # Swap the x and y rotation
         self.rotation_params[:, [1, 2]] = self.rotation_params[:, [2, 1]]
 
+    def on_train_epoch_end(self):
+        """
+        Called at the end of each training epoch.
+        """
+        if self.rotation_optim_case == 'quaternion':
+            # Get the predicted quaternions
+            predicted = self.get_quaternions(self.rotation_params)
+
+            # get first predicted quaternion P_0 (shape: [4])
+            P0 = predicted[0]
+
+            # relative quaternion to align first predicted quat to identity
+            q_rel = self.quat_conjugate(P0.unsqueeze(0))  # shape [1,4]
+
+            # apply q_rel to all predictions as before
+            Q_aligned = self.quat_multiply(q_rel, predicted)
+            Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
+
+            # Normalize the rotation parameters to ensure they are valid quaternions
+            self.rotation_params.data = Q_aligned
+
+        if self.rotation_optim_case == 'basis':
+
+            # Get the predicted quaternions
+            predicted = self.get_quaternions(self.rotation_params)
+
+            # get first predicted quaternion P_0 (shape: [4])
+            P0 = predicted[0]
+
+            # relative quaternion to align first predicted quat to identity
+            q_rel = self.quat_conjugate(P0.unsqueeze(0))
+
+            # apply q_rel to all predictions as before
+            Q_aligned = self.quat_multiply(q_rel, predicted)
+            Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
+
+            # Generate the basis functions. Solve the least squares problem to find the coefficients
+            coeffs = torch.linalg.lstsq(self.basis, Q_aligned).solution
+
+            # Update the rotation parameters with the new coefficients
+            self.rotation_params.data = coeffs
+
+    def quat_conjugate(self, q):
+        # q: (...,4) tensor of unit quaternions (w,x,y,z)
+        w, x, y, z = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+        return torch.stack([w, -x, -y, -z], dim=-1)
+    
+    def quat_multiply(self, q, r):
+        # q, r: (..., 4) tensors of quaternions in (w, x, y, z) format
+        w1, x1, y1, z1 = q[..., 0], q[..., 1], q[..., 2], q[..., 3]
+        w2, x2, y2, z2 = r[..., 0], r[..., 1], r[..., 2], r[..., 3]
+        return torch.stack([
+            w1*w2 - x1*x2 - y1*y2 - z1*z2,
+            w1*x2 + x1*w2 + y1*z2 - z1*y2,
+            w1*y2 - x1*z2 + y1*w2 + z1*x2,
+            w1*z2 + x1*y2 - y1*x2 + z1*w2,
+        ], dim=-1)
 
 # Testing the code
 if __name__ == "__main__":
