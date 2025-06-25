@@ -413,6 +413,7 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projections.dtype == torch.complex64:
                         estimated_projections = estimated_projections.imag
+
                     estimated_projections = estimated_projections.permute(0, 3, 1, 2)
                 
                 # If two channels are present, concatenate them - for complex valued projections
@@ -421,7 +422,7 @@ class Tomography(dl.Application):
                     estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)  # Phase correction
                     estimated_projections = estimated_projections - self.V0  + 1 # Subtract the initial volume to remove the background
 
-                    #estimated_projections = self.correctfield(estimated_projections)
+                    # estimated_projections = self.correctfield(estimated_projections)
 
                     # Concatenate real and imaginary parts along the last dimension
                     estimated_projections = torch.concatenate(
