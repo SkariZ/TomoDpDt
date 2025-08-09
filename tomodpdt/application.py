@@ -34,6 +34,7 @@ class Tomography(dl.Application):
                  volume_init = None,  # Initial guess for volume explicitly
                  minibatch = 16,
                  loss_weights = None,
+                 filter_volume: bool = True,
                  learning_rate_volume: float = 5e-4,
                  learning_rate_rotation: float = 8e-4,
                  learning_rate_translation: float = 8e-4,
@@ -79,7 +80,7 @@ class Tomography(dl.Application):
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10,
-            'latent_loss': 0.2,
+            'latent_loss': 0.1,
             'rtv_loss': 1,
             'qv_loss': 10,
             'q0_loss': 0,
@@ -92,6 +93,9 @@ class Tomography(dl.Application):
         if not all(k in self.loss_weights for k in ['proj_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
         
+        # Set the filter volume flag
+        self.filter_volume = filter_volume
+
         # Set the learning rates for volume, rotation, and translation
         self.learning_rate_volume = learning_rate_volume
         self.learning_rate_rotation = learning_rate_rotation
@@ -135,6 +139,15 @@ class Tomography(dl.Application):
 
         # Placeholder
         self.normalize = False
+
+        # 3D convolutional model for the volume
+        if self.filter_volume:
+            self.convolution_3d_model = nn.Sequential(
+                nn.Conv3d(1, 16, kernel_size=3, stride=1, padding=1),
+                nn.LeakyReLU(0.2, inplace=True),
+                nn.Conv3d(16, 1, kernel_size=3, stride=1, padding=1),
+                nn.Sigmoid(),
+            )
 
 
     def initialize_parameters(self, projections, **kwargs):
@@ -229,6 +242,7 @@ class Tomography(dl.Application):
             self.V0_phase = torch.median(torch.angle(self.V0))
             self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
 
+
     def configure_optimizers(self):
         param_groups = []
 
@@ -249,7 +263,7 @@ class Tomography(dl.Application):
 
             scheduler = {
                 'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode='min', factor=0.7, patience=10, threshold=5e-3,
+                    optimizer, mode='min', factor=0.75, patience=15, threshold=1e-3, min_lr=1e-6
                 ),
                 'monitor': 'train_total_loss',
             }
@@ -384,6 +398,12 @@ class Tomography(dl.Application):
         given indices by rotating the volume and imaging it.
         """
         volume = self.volume
+        
+        # Preprocess the volume
+        #if self.filter_volume:
+        #    volume = self.convolution_3d_model(volume.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
+        #    volume = volume.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
+
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         translations = self.get_translations(self.translation_params)[idx] if self.optimize_translation else None
 
@@ -703,17 +723,17 @@ class Tomography(dl.Application):
         # Flatten normalized voxel-space grid
         grid = self.grid.view(-1, 3)  # (N^3, 3)
 
-        # Rotate grid by R
-        rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
-
         # If translation provided, normalize and subtract
         if translations is not None:
-            t_norm = torch.zeros(3, device=rotated_grid.device)
+            t_norm = torch.zeros(3, device=grid.device)
             t_norm[2] = 2 * translations[0] / (self.N - 1)  # dz normalized
             t_norm[1] = 2 * translations[1] / (self.N - 1)  # dy normalized
             t_norm[0] = 2 * translations[2] / (self.N - 1)  # dx normalized
 
-            rotated_grid -= t_norm.view(1, 3)
+            grid -= t_norm.view(1, 3)
+
+        # Rotate grid by R
+        rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
 
         # Reshape and clamp
         rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
@@ -767,10 +787,7 @@ class Tomography(dl.Application):
 
         # Prepare and expand normalized flat grid on correct device: (N³, 3)
         grid = self.grid_batch.to(volume.device)  # (N³, 3)
-        grid = grid.unsqueeze(0).expand(B, -1, -1)  # (B, N³, 3)
-
-        # Rotate the grid points by batch rotation matrices: (B, N³, 3)
-        rotated_grid = torch.bmm(grid, R.transpose(1, 2))
+        grid = grid.unsqueeze(0).expand(B, -1, -1).clone()  # (B, N³, 3)
 
         # Apply translation if provided (convert voxel units to normalized coords)
         if translations is not None:
@@ -779,7 +796,10 @@ class Tomography(dl.Application):
             t_norm[:, 0] = 2 * translations[:, 0] / (D - 1)  # dz → z axis
             t_norm[:, 1] = 2 * translations[:, 1] / (H - 1)  # dy → y axis
             t_norm[:, 2] = 2 * translations[:, 2] / (W - 1)  # dx → x axis
-            rotated_grid -= t_norm[:, None, :]  # Broadcast over all points
+            grid -= t_norm[:, None, :]  # Broadcast over all points
+
+        # Rotate the grid points by batch rotation matrices: (B, N³, 3)
+        rotated_grid = torch.bmm(grid, R.transpose(1, 2))
 
         # Reshape rotated grid back to (B, D, H, W, 3) for grid_sample
         rotated_grid = rotated_grid.view(B, D, H, W, 3).clamp(-1, 1)

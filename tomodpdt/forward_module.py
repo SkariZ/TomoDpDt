@@ -91,20 +91,18 @@ class ForwardModelSimple(nn.Module):
         # Flatten normalized voxel-space grid
         grid = self.grid.view(-1, 3)  # (N^3, 3)
 
+        # If translation provided, add in voxel units before normalization
+        if translations is not None:
+            grid = grid - translations.view(1, 3) / (self.N / 2)  # Adjust grid by translation in voxel units
+
         # Rotate grid by R
         rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
 
-        # If translation provided, normalize and subtract
-        if translations is not None:
-            t_norm = torch.zeros(3, device=rotated_grid.device)
-            t_norm[2] = 2 * translations[0] / (self.N - 1)  # dz normalized
-            t_norm[1] = 2 * translations[1] / (self.N - 1)  # dy normalized
-            t_norm[0] = 2 * translations[2] / (self.N - 1)  # dx normalized
-
-            rotated_grid -= t_norm.view(1, 3)
+        # Normalize the grid values to be in the range [-1, 1] for grid_sample
+        rotated_grid = rotated_grid.clamp(-1, 1)
 
         # Reshape and clamp
-        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
+        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3)
 
         # Prepare volume: add batch and channel dims if needed
         if volume.dim() == 3:
