@@ -741,9 +741,9 @@ class Tomography(dl.Application):
         # If translation provided, normalize and subtract
         if translations is not None:
             t_norm = torch.zeros(3, device=grid.device)
-            t_norm[0] = 2 * translations[0] / (self.D - 1)  # dz normalized
-            t_norm[1] = 2 * translations[1] / (self.H - 1)  # dy normalized
-            t_norm[2] = 2 * translations[2] / (self.W - 1)  # dx normalized
+            t_norm[0] = 2 * translations[0] / (D - 1)  # dz normalized
+            t_norm[1] = 2 * translations[1] / (H - 1)  # dy normalized
+            t_norm[2] = 2 * translations[2] / (W - 1)  # dx normalized
 
             grid -= t_norm.view(1, 3)
 
@@ -871,15 +871,15 @@ class Tomography(dl.Application):
             translations = translations[rand_indices] if translations is not None else None
 
         # Initialize the estimated projections
-        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
+        estimated_projections = torch.zeros(quaternions.shape[0] - 1, self.CH, self.N, self.N, device=self._device)
 
         # Rotate the volume and estimate the projections
-        for i in range(quaternions.shape[0]):
-            rotated_volume = self.apply_rotation(
+        for i in range(quaternions.shape[0] - 1):
+            rotated_volume = self.apply_rotation_batch(
                 volume, 
-                quaternions[i], 
-                translations=translations[i] if translations is not None else None
-                )
+                quaternions[i:i+1], 
+                translations=translations[i:i+1] if translations is not None else None
+                ).squeeze(0)  # Remove batch dimension
 
             # Check if imaging model is a nn.Module
             if isinstance(self.imaging_model, nn.Module):
@@ -925,7 +925,8 @@ class Tomography(dl.Application):
     
     def get_quaternions_final(self, rotations=None):
         """
-        Get quaternions from the rotation parameters."""
+        Get quaternions from the rotation parameters.
+        """
 
         if rotations is None:
             rotations = self.rotation_params
@@ -941,7 +942,8 @@ class Tomography(dl.Application):
         
     def get_translations_final(self, raw_translation=None):
         """
-        Get translations from the translation parameters."""
+        Get translations from the translation parameters.
+        """
 
         if raw_translation is None:
             raw_translation = self.translation_params
@@ -988,6 +990,9 @@ class Tomography(dl.Application):
         if self.optimize_translation and self.translation_params is not None:
             self.translation_params.requires_grad = requires_grad
 
+            if self.translation_maxmin is not None:
+                self.translation_maxmin = 1.0
+
     def toggle_gradients_quaternion(self, requires_grad):
         """
         Toggle the requires_grad attribute of the quaternion parameters.
@@ -1000,6 +1005,9 @@ class Tomography(dl.Application):
         """
         if self.optimize_translation and self.translation_params is not None:
             self.translation_params.requires_grad = requires_grad
+
+            if self.translation_maxmin is not None:
+                self.translation_maxmin = 1.0
 
     def toggle_gradients_volume(self, requires_grad):
         """
