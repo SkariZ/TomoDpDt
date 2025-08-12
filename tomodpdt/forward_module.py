@@ -17,6 +17,7 @@ class ForwardModelSimple(nn.Module):
         self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
         self.grid = torch.stack([self.zz, self.yy, self.xx], dim=-1)
         self.grid = self.grid.view(-1, 3)
+        self.grid = (self.grid / (self.N / 2)).clamp(-1, 1)  # Normalize to [-1, 1]
 
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.to_device()
@@ -69,7 +70,7 @@ class ForwardModelSimple(nn.Module):
         rotated_grid = torch.matmul(self.grid, R.t()).view(self.N, self.N, self.N, 3)
         
         # Normalize the grid values to be in the range [-1, 1] for grid_sample
-        rotated_grid = (rotated_grid / (self.N / 2)).clamp(-1, 1)
+        rotated_grid = rotated_grid.clamp(-1, 1)
         
         # Apply grid_sample to rotate the volume
         rotated_volume = F.grid_sample(volume.unsqueeze(0).unsqueeze(0), rotated_grid.unsqueeze(0), align_corners=True, padding_mode='zeros')

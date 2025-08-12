@@ -125,11 +125,11 @@ class Tomography(dl.Application):
         #self.grid_batch = torch.stack((z, y, x), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
 
         # Store normalized voxel-space grid for single volume
-        x = torch.arange(self.N, device=self._device) - self.N / 2
-        xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
+        lin = torch.linspace(-1, 1, self.N, device=self._device)
+        xx, yy, zz = torch.meshgrid(lin, lin, lin, indexing='ij')
         grid = torch.stack([zz, yy, xx], dim=-1)
-        self.grid = (grid / (self.N / 2)).clamp(-1, 1)  # Already normalized!
-        self.grid = self.grid.view(self.N, self.N, self.N, 3)  # Optional
+        #self.grid = (grid / (self.N / 2)).clamp(-1, 1)  # Already normalized!
+        self.grid = grid.view(self.N, self.N, self.N, 3)  # Optional
 
         # Store flat normalized grid for batch processing
         lin = torch.linspace(-1, 1, self.N, device=self._device)
@@ -405,7 +405,7 @@ class Tomography(dl.Application):
         #    volume = volume.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
 
         quaternions = self.get_quaternions(self.rotation_params)[idx]
-        translations = self.get_translations(self.translation_params)[idx] if self.optimize_translation else None
+        translations = self.get_translations(self.translation_params)[idx]
 
         batch_size = quaternions.shape[0]
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
@@ -538,7 +538,7 @@ class Tomography(dl.Application):
 
         # This is the predicted translations
         if self.optimize_translation and self.translation_params is not None:
-            translations_pred = self.get_translations(self.translation_params)[idx_batch] if self.optimize_translation else None
+            translations_pred = self.get_translations(self.translation_params)[idx_batch]
 
         # Compute the quaternion validity loss
         if self.rotation_params.requires_grad:
@@ -680,8 +680,16 @@ class Tomography(dl.Application):
         return reg_terms
 
     def get_translations(self, raw_translation):
-        max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
-        return max_translation * torch.tanh(raw_translation)
+
+        if self.optimize_translation:
+            max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
+            return max_translation * torch.tanh(raw_translation)
+        
+        elif raw_translation is not None:
+            return raw_translation
+        
+        else:
+            return None
 
     def get_quaternions(self, rotations=None):
         """
@@ -720,15 +728,22 @@ class Tomography(dl.Application):
         q = q / q.norm()
         R = self.quaternion_to_rotation_matrix(q)  # (3,3)
 
+        # Prepare volume: add batch and channel dims if needed
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
+
+        # Get volume shape
+        _, _, D, H, W = volume.shape
+
         # Flatten normalized voxel-space grid
         grid = self.grid.view(-1, 3)  # (N^3, 3)
 
         # If translation provided, normalize and subtract
         if translations is not None:
             t_norm = torch.zeros(3, device=grid.device)
-            t_norm[2] = 2 * translations[0] / (self.N - 1)  # dz normalized
-            t_norm[1] = 2 * translations[1] / (self.N - 1)  # dy normalized
-            t_norm[0] = 2 * translations[2] / (self.N - 1)  # dx normalized
+            t_norm[0] = 2 * translations[0] / (self.D - 1)  # dz normalized
+            t_norm[1] = 2 * translations[1] / (self.H - 1)  # dy normalized
+            t_norm[2] = 2 * translations[2] / (self.W - 1)  # dx normalized
 
             grid -= t_norm.view(1, 3)
 
@@ -737,10 +752,6 @@ class Tomography(dl.Application):
 
         # Reshape and clamp
         rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
-
-        # Prepare volume: add batch and channel dims if needed
-        if volume.dim() == 3:
-            volume = volume.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
 
         rotated_volume = F.grid_sample(volume, rotated_grid, align_corners=True)
 
@@ -830,7 +841,7 @@ class Tomography(dl.Application):
         quaternions = self.get_quaternions(self.rotation_params).to(self._device)
 
         # Get the translations
-        translations = self.get_translations(self.translation_params).to(self._device) if self.optimize_translation else None
+        translations = self.get_translations(self.translation_params).to(self._device)
 
         # Get the volume
         volume = self.volume.to(self._device)
@@ -935,9 +946,12 @@ class Tomography(dl.Application):
         if raw_translation is None:
             raw_translation = self.translation_params
 
-        max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
-        return max_translation * torch.tanh(raw_translation)
-        
+        if self.optimize_translation and raw_translation is not None:
+            max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
+            return max_translation * torch.tanh(raw_translation)
+        else:
+            return None
+
     def move_all_to_device(self, device):
         """
         Move all parameters to the given device.
@@ -970,6 +984,7 @@ class Tomography(dl.Application):
         Toggle the requires_grad attribute of the rotation and translation parameters.
         """
         self.rotation_params.requires_grad = requires_grad
+
         if self.optimize_translation and self.translation_params is not None:
             self.translation_params.requires_grad = requires_grad
 
