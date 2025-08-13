@@ -385,7 +385,7 @@ class TomoPlotter:
                 m = self.tomo.vae_model.to(self.tomo.frames.device)
                 pred = m(self.tomo.frames)[0].cpu().numpy()
             else:
-                pred = self.tomo.full_forward_final(max_projections=9).detach().cpu().numpy()
+                pred = self.tomo.full_forward_final(max_projections=10).detach().cpu().numpy()
 
         if gt is None:
             gt = self.tomo.frames[:9].cpu().numpy()

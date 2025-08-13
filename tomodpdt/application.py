@@ -871,7 +871,7 @@ class Tomography(dl.Application):
             translations = translations[rand_indices] if translations is not None else None
 
         # Initialize the estimated projections
-        estimated_projections = torch.zeros(quaternions.shape[0] - 1, self.CH, self.N, self.N, device=self._device)
+        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
 
         # Rotate the volume and estimate the projections
         for i in range(quaternions.shape[0] - 1):
