@@ -56,7 +56,7 @@ def process_latent_space(
         if intial_axes_case == 'cv2_flow':
             flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
             initial_axes = classify_rotation_axis(flow_vectors)
-        else:
+        elif intial_axes_case == 'std':
             std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
             std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
             initial_axes = 'x' if std_x > std_y else 'y'

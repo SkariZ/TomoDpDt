@@ -79,7 +79,7 @@ class Tomography(dl.Application):
 
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 10,
+            'proj_loss': 12.5,
             'latent_loss': 0.1,
             'rtv_loss': 1,
             'qv_loss': 10,
@@ -951,6 +951,8 @@ class Tomography(dl.Application):
         if self.optimize_translation and raw_translation is not None:
             max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
             return max_translation * torch.tanh(raw_translation)
+        elif raw_translation is not None:
+            return raw_translation
         else:
             return None
 

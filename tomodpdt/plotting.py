@@ -538,7 +538,7 @@ class TomoPlotter:
         """
         if gt_q is not None:
             # Compute the difference between predicted and true quaternions
-            diff = quaternions_pred - gt_q[:len(quaternions_pred)].numpy()
+            diff = quaternions_pred - gt_q[:len(quaternions_pred)].cpu().numpy()
 
             # Plot the differences
             plt.figure(figsize=(7, 4))
@@ -553,16 +553,34 @@ class TomoPlotter:
             fig, ax = plt.subplots(2, 2, figsize=(6, 6))
             fig.suptitle("Scatter plots of predicted vs. true quaternion components")
             for i, (r, c) in enumerate([(0, 0), (0, 1), (1, 0), (1, 1)]):
-                ax[r][c].scatter(quaternions_pred[:, i], gt_q[:len(quaternions_pred), i], color='darkblue', alpha=0.8)
+                ax[r][c].scatter(quaternions_pred[:, i], gt_q[:len(quaternions_pred), i].cpu().numpy(), color='darkblue', alpha=0.8)
                 ax[r][c].set_title(fr'$q_{i}$')
             self._save_fig('quaternions_scatter')
             plt.show()
+    
+    def plot_translations(self, translations=None, save_name="translations"):
+        if translations is None:
+            translations = self.tomo.get_translations_final().detach().cpu().numpy()
+
+        plt.figure(figsize=(7, 4))
+        plt.plot(translations[:, 0], label='x', linewidth=2)
+        plt.plot(translations[:, 1], label='y', linewidth=2)
+        plt.plot(translations[:, 2], label='z', linewidth=2)
+        plt.legend()
+        plt.xlabel('Frame')
+        plt.ylabel('Translation')
+        plt.title('Translations over time')
+        self._save_fig(save_name)
+        plt.show()
 
     def plot_optimization(self, gt_q=None, gt_v=None):
         predicted_object = self.tomo.volume.detach().cpu().numpy()
         projections_pred = self.tomo.full_forward_final(max_projections=16).detach().cpu().numpy()
         projections_gt = self.tomo.frames.detach().cpu().numpy()
         quaternions_pred = self.tomo.get_quaternions_final().detach().cpu().numpy()
+
+        # Plot initial
+        self.plot_initial(q_gt=gt_q)
 
         # Plot the predicted object
         self.plot_sum_object(predicted_object, save_name="predicted_object")
@@ -574,10 +592,13 @@ class TomoPlotter:
         self.plot_reconstructed_vs_gt(projections_pred, projections_gt, save_name='projections', column_headers=["Predicted", "Ground Truth"])
 
         # Plot the quaternions
-        self.plot_quaternions(gt=gt_q)
+        self.plot_quaternions(q_gt=gt_q)
 
         # Plot the difference between predicted and true quaternions
         self.plot_quaternion_diff(quaternions_pred, gt_q)
+
+        # Plot the translations
+        self.plot_translations()
 
 
 def visualize_3d_volume(
