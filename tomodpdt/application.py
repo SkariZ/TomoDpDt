@@ -520,8 +520,14 @@ class Tomography(dl.Application):
         Compute the projection loss, latent loss, and other regularization terms.
         """
 
-        # Compute the projection loss - MAE
-        proj_loss = F.l1_loss(yhat, frames_batch)
+        # Compute the projection loss - MAE of the subtracted frames
+        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1:
+            proj_loss_diff = F.l1_loss(yhat[1:] - yhat[:-1], frames_batch[1:] - frames_batch[:-1]) * 5
+        else:
+            proj_loss_diff = torch.tensor(0.0, device=self._device)
+
+        # Compute the projection loss
+        proj_loss = F.l1_loss(yhat, frames_batch) + proj_loss_diff
 
         # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
         latent_loss = F.l1_loss(latent_space, self.latent[idx_batch])
