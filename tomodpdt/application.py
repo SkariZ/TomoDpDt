@@ -157,6 +157,9 @@ class Tomography(dl.Application):
         # Move projections to the device
         projections = projections.to(self._device)
 
+        # Save a clone of the original projections for now
+        projections_original = projections.clone()
+
         # Compute the global min/max values per channel over the entire dataset
         self.compute_global_min_max(projections)
 
@@ -238,7 +241,7 @@ class Tomography(dl.Application):
             self.toggle_gradients_rotation_translation(False)  # Freeze translation parameters if not optimizing
 
         # Setting frames to the number of rotations
-        self.frames = projections[:self.rotation_initial_dict["peaks"][-1].item()]
+        self.frames = projections_original[:self.rotation_initial_dict["peaks"][-1].item()]
 
         # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
         @self.optimizer.params
