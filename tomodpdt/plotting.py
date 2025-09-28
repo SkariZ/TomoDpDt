@@ -60,6 +60,12 @@ def plot_reconstructed_vs_gt(recon_pred, recon_gt, save_name='recon_vs_gt', colu
 
     fig, ax = plt.subplots(3, 6, figsize=(12, 6))  # 3 rows, 6 columns
     plt.suptitle(f"{column_headers[0]} vs {column_headers[1]} Frames", fontsize=14)
+    
+    # If recon_pred and recon_gt are torch tensors, convert to numpy
+    if isinstance(recon_pred, torch.Tensor):
+        recon_pred = recon_pred.cpu().numpy()
+    if isinstance(recon_gt, torch.Tensor):
+        recon_gt = recon_gt.cpu().numpy()
 
     # Add column headers
     for j, label in zip([1, 4], column_headers):
@@ -103,6 +109,9 @@ def plot_sinogram(frames, slice_n=None, save_name="sinogram", save_folder=None, 
     fig, ax = plt.subplots(1, 2, figsize=(12, 4))
     plt.suptitle(save_name)
 
+    if isinstance(frames, torch.Tensor):
+        frames = frames.cpu().numpy()
+
     # Plot sinogram along x and y axes
     ax[0].set_title("Sinogram along x-axis")
     ax[0].imshow(frames[:, slice_n, :, 0].T, cmap='gray', aspect='auto')
@@ -125,6 +134,9 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     """
     fig, ax = plt.subplots(1, 3, figsize=(10, 3))
     plt.suptitle(f"Summation views of {save_name}")
+
+    if isinstance(object, torch.Tensor):
+        object = object.cpu().numpy()
 
     # Plot sum projections along different axes
     ax[0].set_title("Sum along x-axis")
@@ -150,11 +162,15 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     Parameters:
     quaternions (numpy array): 2D array representing the quaternion components over frames.
     """
+
+    if isinstance(quaternions, torch.Tensor):
+        quaternions = quaternions.cpu().numpy()
+
     plt.figure(figsize=(7, 4))
-    plt.plot(quaternions[:, 0].cpu(), label=r'$q_0$', linewidth=2)
-    plt.plot(quaternions[:, 1].cpu(), label=r'$q_1$', linewidth=2)
-    plt.plot(quaternions[:, 2].cpu(), label=r'$q_2$', linewidth=2)
-    plt.plot(quaternions[:, 3].cpu(), label=r'$q_3$', linewidth=2)
+    plt.plot(quaternions[:, 0], label=r'$q_0$', linewidth=2)
+    plt.plot(quaternions[:, 1], label=r'$q_1$', linewidth=2)
+    plt.plot(quaternions[:, 2], label=r'$q_2$', linewidth=2)
+    plt.plot(quaternions[:, 3], label=r'$q_3$', linewidth=2)
     
     plt.legend()
     plt.xlabel('Frame')
@@ -174,6 +190,10 @@ def plot_grid33_frames(projections, title='frames', save_name='frames_grid', sav
     Parameters:
     projections (numpy array or torch.Tensor): Array containing frame projections.
     """
+
+    if isinstance(projections, torch.Tensor):
+        projections = projections.cpu().numpy()
+
     fig, ax = plt.subplots(3, 3, figsize=(6, 6))
     plt.suptitle(title)
     
@@ -472,6 +492,9 @@ class TomoPlotter:
 
         if projections is None:
             projections = self.tomo.frames.cpu().numpy()
+
+        if isinstance(projections, torch.Tensor):
+            projections = projections.cpu().numpy()
 
         fig, ax = plt.subplots(3, 3, figsize=(6, 6))
         plt.suptitle(title)

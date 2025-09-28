@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 
 from typing import Optional, Sequence
 import time
@@ -40,11 +41,11 @@ class Tomography(dl.Application):
                  learning_rate_translation: float = 8e-4,
                  **kwargs):
         
-        # Set volume size
-        self.N = volume_size[0]
+        # Set volume size and dimensions
         self.volume_size = volume_size
+        self.nx, self.ny, self.nz = volume_size
         
-        # If VAE model is not passed, initialize a default VAE model
+        # If VAE model is not passed, initialize a default VAE model. This will be updated later if needed.
         self.vae_model = vae_model if vae_model is not None else dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]), latent_dim=2)
         
         # Set the encoder and other VAE components
@@ -79,8 +80,9 @@ class Tomography(dl.Application):
 
         # Set the loss weights
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 12.5,
-            'latent_loss': 0.1,
+            'proj_loss': 10.0,
+            'ssim_loss': 1.0,
+            'latent_loss': 0.25,
             'rtv_loss': 1,
             'qv_loss': 10,
             'q0_loss': 0,
@@ -90,7 +92,7 @@ class Tomography(dl.Application):
             }
         
         # Raise error if loss weights don´t contain all the necessary keys
-        if not all(k in self.loss_weights for k in ['proj_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
+        if not all(k in self.loss_weights for k in ['proj_loss', 'ssim_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
         
         # Set the filter volume flag
@@ -114,28 +116,22 @@ class Tomography(dl.Application):
                 return torch.sum(volume, dim=-1)
             self.imaging_model = projection
 
-        # Set the grid for rotating the volume
-        #x = torch.arange(self.N) - self.N / 2
-        #self.xx, self.yy, self.zz = torch.meshgrid(x, x, x, indexing='ij')
-        #self.grid = torch.stack([self.zz, self.yy, self.xx], dim=-1).to(self._device)
-
-        # Set the grid for batch rotation
-        #lin = torch.linspace(-1, 1, self.N, device=self._device)
-        #x, y, z = torch.meshgrid(lin, lin, lin, indexing='ij')
-        #self.grid_batch = torch.stack((z, y, x), dim=-1).reshape(-1, 3)  # (D*H*W, 3)
-
         # Store normalized voxel-space grid for single volume
-        lin = torch.linspace(-1, 1, self.N, device=self._device)
-        xx, yy, zz = torch.meshgrid(lin, lin, lin, indexing='ij')
+        lin_x = torch.linspace(-1, 1, self.nx, device=self._device)
+        lin_y = torch.linspace(-1, 1, self.ny, device=self._device)
+        lin_z = torch.linspace(-1, 1, self.nz, device=self._device)
+
+        xx, yy, zz = torch.meshgrid(lin_x, lin_y, lin_z, indexing='ij')
         grid = torch.stack([zz, yy, xx], dim=-1)
-        #self.grid = (grid / (self.N / 2)).clamp(-1, 1)  # Already normalized!
-        self.grid = grid.view(self.N, self.N, self.N, 3)  # Optional
+        self.grid = grid.view(self.nx, self.ny, self.nz, 3)  # (nx, ny, nz, 3)
 
         # Store flat normalized grid for batch processing
-        lin = torch.linspace(-1, 1, self.N, device=self._device)
-        xx, yy, zz = torch.meshgrid(lin, lin, lin, indexing='ij')
-        grid_batch = torch.stack([zz, yy, xx], dim=-1)
-        self.grid_batch = grid_batch.view(-1, 3)  # Shape: (N^3, 3)
+        grid_batch = grid.view(-1, 3)  # Shape: (nx*ny*nz, 3)
+        self.grid_batch = grid_batch
+
+        # Move grids to the device
+        self.grid = self.grid.to(self._device)
+        self.grid_batch = self.grid_batch.to(self._device)
 
         # Placeholder
         self.normalize = False
@@ -148,7 +144,6 @@ class Tomography(dl.Application):
                 nn.Conv3d(16, 1, kernel_size=3, stride=1, padding=1),
                 nn.Sigmoid(),
             )
-
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -178,33 +173,47 @@ class Tomography(dl.Application):
             # Normalize the projections per channel using precomputed global min/max scaling
             projections = self.correctfield(projections)
 
-        if self.CH > 0 and self.N >= 32:
-            # Update the VAE model to handle multiple channels
-            vae = vm.ConvVAE(input_shape=(self.CH, self.N, self.N), latent_dim=2, output_activation='sigmoid' if self.normalize else 'linear')
+        # Build or rebuild the VAE to match channels and padded size
+        if self.CH > 0 and min([self.nx, self.ny]) >= 24:
+            _, C, H, W = projections.shape
+
+            # Pad H and W to be divisible by 8 (VAE-friendly)
+            pad_h = (8 - H % 8) % 8
+            pad_w = (8 - W % 8) % 8
+            pad_top, pad_bottom = pad_h // 2, pad_h - pad_h // 2
+            pad_left, pad_right = pad_w // 2, pad_w - pad_w // 2
+            projections = F.pad(projections, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+            self.H_padded, self.W_padded = projections.shape[2], projections.shape[3]
+
+            # Build VAE with correct input channels
+            vae = vm.ConvVAE(
+                input_shape=(self.CH, self.H_padded, self.W_padded),
+                latent_dim=2,
+                output_activation='sigmoid' if self.normalize else 'linear'
+            )
             self.vae_model.encoder = vae.encoder
             self.vae_model.decoder = vae.decoder
             self.vae_model.fc_mu = vae.fc_mu
             self.vae_model.fc_var = vae.fc_var
             self.vae_model.fc_dec = vae.fc_dec
-            self.vae_model.beta = 0.025
+            self.vae_model.beta = 0.025 if self.normalize else 1e-5
             if not self.normalize:
                 self.vae_model.reconstruction_loss = torch.nn.L1Loss()
-                self.vae_model.beta = 1e-5
-        
+
         # Train the VAE model if not already trained
         if self.vae_model.training:
             self.train_vae(projections, **kwargs)
 
-        # Compute the latent space
+        # Compute latent space
         latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
         self.latent = latent_space
 
         # Retrieve the initial rotation parameters
         self.rotation_initial_dict = erfl.process_latent_space(
-            z=latent_space, 
-            frames=projections, 
+            z=latent_space,
+            frames=projections,
             **kwargs
-            )
+        )
 
         # Set the rotation parameters
         if self.rotation_optim_case == 'quaternion':
@@ -355,34 +364,36 @@ class Tomography(dl.Application):
         
     def initialize_volume(self):
         """
-        Initialize the volume.
-
-        Returns:
-        - volume (torch.Tensor): Initialized volume.
+        Initialize the volume with shape (nx, ny, nz) from self.volume_size.
         """
+        nx, ny, nz = self.volume_size  # get actual volume dimensions
+
         if self.initial_volume == 'gaussian':
-            x = torch.arange(self.N) - self.N / 2
-            xx, yy, zz = torch.meshgrid(x, x, x, indexing='ij')
+            x = torch.arange(nx) - nx / 2
+            y = torch.arange(ny) - ny / 2
+            z = torch.arange(nz) - nz / 2
+            xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
             cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
             cloud = cloud / cloud.max()
-            # Cap values to 0 - 0.1
             cloud = torch.clamp(cloud, 0, 0.1)
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(self.N, self.N, self.N, device=self._device) + 1e-6)
-        
+            self.volume = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device) + 1e-6)
+
         elif self.initial_volume == 'refraction':
-            self.volume = nn.Parameter(torch.ones(self.N, self.N, self.N, device=self._device) * 1.33)
+            self.volume = nn.Parameter(torch.ones(nx, ny, nz, device=self._device) * 1.33)
 
         elif self.initial_volume == 'random':
-            self.volume = nn.Parameter(torch.rand(self.N, self.N, self.N, device=self._device))
+            self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device))
 
         elif self.initial_volume == 'given' and self.volume_init is not None:
             self.volume = nn.Parameter(self.volume_init.to(self._device))
-        
+
         else:
-            raise ValueError("Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'.")
+            raise ValueError(
+                "Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'."
+            )
 
     def initialize_translation(self, N):
         """
@@ -408,7 +419,7 @@ class Tomography(dl.Application):
         translations = self.get_translations(self.translation_params)[idx]
 
         batch_size = quaternions.shape[0]
-        estimated_projections_batch = torch.zeros(batch_size, self.CH, self.N, self.N, device=self._device)
+        estimated_projections_batch = torch.zeros(batch_size, self.CH, self.nx, self.ny, device=self._device)
 
         # Create minibatches for rotation
         if batch_size < self.minibatch:
@@ -477,21 +488,34 @@ class Tomography(dl.Application):
         if self.normalize:
             yhat = self.per_channel_normalization(yhat)
 
-        # Estimate the latent space
+        # Only for VAE: pad yhat if needed
+        if self.H_padded != yhat.shape[2] or self.W_padded != yhat.shape[3]:
+            pad_h = self.H_padded - yhat.shape[2]
+            pad_w = self.W_padded - yhat.shape[3]
+            pad_top = pad_h // 2
+            pad_bottom = pad_h - pad_top
+            pad_left = pad_w // 2
+            pad_right = pad_w - pad_left
+            yhat_vae = F.pad(yhat, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+        else:
+            yhat_vae = yhat
+
+        # Compute latent space with padded yhat
         with torch.no_grad():
-            latent_space = self.fc_mu(self.encoder(yhat))
+            latent_space = self.fc_mu(self.encoder(yhat_vae))
         
         # Compute the losses
-        proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss = self.compute_loss(
+        proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss = self.compute_loss(
             yhat, latent_space, frames_batch, idx_batch, self.loss_weights
             )
 
         # Compute the total loss
-        tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + rtr_trans_loss + so_loss
+        tot_loss = proj_loss + ssim_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + rtr_trans_loss + so_loss
 
         loss = {
             "total_loss": tot_loss,
-            "proj_loss": proj_loss, 
+            "proj_loss": proj_loss,
+            "ssim_loss": ssim_loss, 
             "latent_loss": latent_loss, 
             "rtv_loss": rtv_loss, 
             "qv_loss": qv_loss, 
@@ -528,6 +552,10 @@ class Tomography(dl.Application):
 
         # Compute the projection loss
         proj_loss = F.l1_loss(yhat, frames_batch) + proj_loss_diff
+
+        # Compute the SSIM loss
+        ssim_metric = SSIM(data_range=1.0 if self.normalize else torch.max(frames_batch) - torch.min(frames_batch)).to(self._device)
+        ssim_loss = 1 - ssim_metric(yhat, frames_batch)
 
         # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
         latent_loss = F.l1_loss(latent_space, self.latent[idx_batch])
@@ -590,6 +618,7 @@ class Tomography(dl.Application):
         # Scale the losses
         if loss_weights is not None and isinstance(loss_weights, dict):
             proj_loss *= loss_weights['proj_loss']
+            ssim_loss *= loss_weights['ssim_loss']
             latent_loss *= loss_weights['latent_loss']
             rtv_loss *= loss_weights['rtv_loss']
             qv_loss *= loss_weights['qv_loss']
@@ -599,7 +628,8 @@ class Tomography(dl.Application):
             so_loss *= loss_weights['so_loss']
         else:
             proj_loss *= 10
-            latent_loss *= 0.01
+            ssim_loss *= 1
+            latent_loss *= 0.025
             rtv_loss *= 1
             qv_loss *= 10
             q0_loss *= 100
@@ -607,7 +637,7 @@ class Tomography(dl.Application):
             rtr_trans_loss *= 10
             so_loss *= 1e5
         
-        return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss
+        return proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss
 
     def strictly_over_loss(self, volume, value=1.33):
         """
@@ -730,6 +760,19 @@ class Tomography(dl.Application):
 
         return R
 
+    def quaternion_to_rotation_matrix_batch(self, q):
+        """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
+        q = q / q.norm(dim=1, keepdim=True)  # Normalize quaternions batchwise
+        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
+
+        R = torch.stack([
+            1 - 2*y**2 - 2*z**2,  2*x*y - 2*z*w,  2*x*z + 2*y*w,
+            2*x*y + 2*z*w,  1 - 2*x**2 - 2*z**2,  2*y*z - 2*x*w,
+            2*x*z - 2*y*w,  2*y*z + 2*x*w,  1 - 2*x**2 - 2*y**2
+        ], dim=1).reshape(-1, 3, 3)  # Shape: (B, 3, 3)
+
+        return R
+
     def apply_rotation(self, volume, q, translations=None):
         q = q / q.norm()
         R = self.quaternion_to_rotation_matrix(q)  # (3,3)
@@ -757,24 +800,11 @@ class Tomography(dl.Application):
         rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
 
         # Reshape and clamp
-        rotated_grid = rotated_grid.view(1, self.N, self.N, self.N, 3).clamp(-1, 1)
+        rotated_grid = rotated_grid.view(1, D, H, W, 3).clamp(-1, 1)
 
         rotated_volume = F.grid_sample(volume, rotated_grid, align_corners=True)
 
         return rotated_volume.squeeze(0).squeeze(0)
-
-    def quaternion_to_rotation_matrix_batch(self, q):
-        """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
-        q = q / q.norm(dim=1, keepdim=True)  # Normalize quaternions batchwise
-        w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
-
-        R = torch.stack([
-            1 - 2*y**2 - 2*z**2,  2*x*y - 2*z*w,  2*x*z + 2*y*w,
-            2*x*y + 2*z*w,  1 - 2*x**2 - 2*z**2,  2*y*z - 2*x*w,
-            2*x*z - 2*y*w,  2*y*z + 2*x*w,  1 - 2*x**2 - 2*y**2
-        ], dim=1).reshape(-1, 3, 3)  # Shape: (B, 3, 3)
-
-        return R
 
     def apply_rotation_batch(self, volume, quaternions, translations=None):
         """
@@ -877,7 +907,7 @@ class Tomography(dl.Application):
             translations = translations[rand_indices] if translations is not None else None
 
         # Initialize the estimated projections
-        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.N, self.N, device=self._device)
+        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.nx, self.ny, device=self._device)
 
         # Rotate the volume and estimate the projections
         for i in range(quaternions.shape[0] - 1):

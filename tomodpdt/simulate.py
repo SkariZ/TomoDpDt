@@ -37,125 +37,97 @@ def create_data(
         rotation_case='sinusoidal'
         ):
     """
-    Function to create a dataset of 3D objects and their 2D projections, given the imaging modality and the rotation case.
+    Generate a dataset of 3D objects and their 2D projections.
+    Handles non-cubic volumes with shape (nx, ny, nz).
     """
 
     image_modality = image_modality.lower() if isinstance(image_modality, str) else image_modality
-
     if image_modality == 'fluorescence':
         volume_case = 'fluorescence'
 
-    # Create a 3D object
+    # Create 3D object
     if volume is not None:
         object = torch.tensor(volume, dtype=torch.float32, device=DEV)
-    elif volume_case == 'gaussian':
-        object = torch.tensor(VOL_GAUSS, dtype=torch.float32, device=DEV)
-    elif volume_case == 'fluorescence':
-        object = torch.tensor(VOL_FLUO, dtype=torch.float32, device=DEV)
-    elif volume_case == 'gaussian_multiple':
-        object = torch.tensor(VOL_GAUSS_MULT, dtype=torch.float32, device=DEV)
-    elif volume_case == 'shell':
-        object = torch.tensor(VOL_SHELL, dtype=torch.float32, device=DEV)
-    elif volume_case == 'random':
-        object = torch.tensor(VOL_RANDOM, dtype=torch.float32, device=DEV)
     else:
-        raise ValueError('Unknown volume case')
+        volume_dict = {
+            'gaussian': VOL_GAUSS,
+            'fluorescence': VOL_FLUO,
+            'gaussian_multiple': VOL_GAUSS_MULT,
+            'shell': VOL_SHELL,
+            'random': VOL_RANDOM
+        }
+        if volume_case not in volume_dict:
+            raise ValueError(f'Unknown volume case: {volume_case}')
+        object = torch.tensor(volume_dict[volume_case], dtype=torch.float32, device=DEV)
 
-    size = object.shape[0]
+    nx, ny, nz = object.shape  # Use actual dimensions
 
     # Create quaternions
-    if isinstance(rotation_case,  np.ndarray) or isinstance(rotation_case, torch.Tensor):
+    if isinstance(rotation_case, (np.ndarray, torch.Tensor)):
         quaternions = rotation_case
-    elif rotation_case == 'noisy_sinusoidal':
-        quaternions = R.generate_noisy_sinusoidal_quaternion(duration=duration, samples=samples, noise=0.001)
-    elif rotation_case == 'sinusoidal':
-        quaternions = R.generate_sinusoidal_quaternion(duration=duration, samples=samples)
-    elif rotation_case == 'random_sinusoidal':
-        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples)
-    elif rotation_case == '1ax':
-        quaternions = R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, phi=0, psi=0)
-    elif rotation_case == 'smooth_varying':
-        quaternions = R.generate_smooth_varying_quaternion(duration=duration, samples=samples)
-    elif rotation_case == 'smooth_varying_random':
-        quaternions = R.generate_smooth_varying_quaternion(duration=duration, samples=samples)
     else:
-        raise ValueError('Unknown rotation case')
+        rotation_fn_dict = {
+            'noisy_sinusoidal': R.generate_noisy_sinusoidal_quaternion,
+            'sinusoidal': R.generate_sinusoidal_quaternion,
+            'random_sinusoidal': R.generate_random_sinusoidal_quaternion,
+            '1ax': lambda duration, samples: R.generate_random_sinusoidal_quaternion(duration, samples, phi=0, psi=0),
+            'smooth_varying': R.generate_smooth_varying_quaternion,
+            'smooth_varying_random': R.generate_smooth_varying_quaternion
+        }
+        if rotation_case not in rotation_fn_dict:
+            raise ValueError(f'Unknown rotation case: {rotation_case}')
+        quaternions = rotation_fn_dict[rotation_case](duration=duration, samples=samples)
 
-    # Create an imaging modality
-    if isinstance(image_modality, torch.nn.Module):
-        imaging_model = image_modality
-
-    elif image_modality == 'sum_projection':
-        imaging_model = IMT.Sum3d2d(dim=-1)
-    
-    elif image_modality == 'sum_projection_avg_weighted':
-        imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
-
-    elif image_modality == 'brightfield':
-        optics = IMT.setup_optics(size, microscopy_regime='Brightfield')
-        imaging_model = IMT.imaging_model(optics)
-        ch = 2
-
-    elif image_modality == 'darkfield':
-        optics = IMT.setup_optics(size, microscopy_regime='Darkfield')
-        imaging_model = IMT.imaging_model(optics)
-
-    elif image_modality == 'iscat':
-        optics = IMT.setup_optics(size, microscopy_regime='Iscat')
-        imaging_model = IMT.imaging_model(optics)
-
-    elif image_modality == 'fluorescence':
-        optics = IMT.setup_optics(size, microscopy_regime='Fluorescence')
-        imaging_model = IMT.imaging_model(optics)
-    else:
-        raise ValueError('Unknown imaging modality')
-    
-    # Number of channels
-    ch = 1
-    if imaging_model.microscopy_regime == 'brightfield' and imaging_model.filtered_properties['return_field'] == True:
-        ch = 2
-
-        V0 = imaging_model(torch.tensor(volume)*0).to(DEV)  # Background field
-        V0_phase = torch.median(torch.angle(V0)).to(DEV)  # Phase of the background field
-        V0 = V0 * torch.exp(-1j * V0_phase) # Phase correction
-        V0 = V0.to(DEV)
-
-    # Create a rotation model for the object
-    rotmod = FM.ForwardModelSimple(N=size)
-
-    # Dataset
-    projections = torch.zeros((samples, ch, object.shape[1], object.shape[2]))
     quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
-    # Generate the dataset
+    # Imaging model
+    if isinstance(image_modality, torch.nn.Module):
+        imaging_model = image_modality
+    else:
+        if image_modality == 'sum_projection':
+            imaging_model = IMT.Sum3d2d(dim=-1)
+        elif image_modality == 'sum_projection_avg_weighted':
+            imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
+        elif image_modality in ['brightfield', 'darkfield', 'iscat', 'fluorescence']:
+            optics = IMT.setup_optics((nx, ny, nz), microscopy_regime=image_modality.capitalize())
+            imaging_model = IMT.imaging_model(optics)
+        else:
+            raise ValueError(f'Unknown imaging modality: {image_modality}')
+
+    # Number of channels
+    ch = 1
+    if getattr(imaging_model, 'microscopy_regime', '') == 'brightfield' and getattr(imaging_model, 'filtered_properties', {}).get('return_field', False):
+        ch = 2
+        V0 = imaging_model(object*0).to(DEV)
+        V0_phase = torch.median(torch.angle(V0)).to(DEV)
+        V0 = V0 * torch.exp(-1j * V0_phase)
+
+    # Rotation model
+    rotmod = FM.ForwardModelSimple(nx=nx, ny=ny, nz=nz)  # Pass actual volume dimensions
+
+    # Dataset
+    projections = torch.zeros((samples, ch, nx, ny), device=DEV)
+
+    # Generate dataset
     for i in range(samples):
-        # Progress in percentage
-        if i % 100 == 0 and i > 0: 
+        if i % 100 == 0 and i > 0:
             print(f'Simulating... {i/samples * 100:.1f}%')
 
-        volume_new = rotmod.apply_rotation(
-            volume=object, 
-            q=quaternions[i]
-            )
+        volume_rot = rotmod.apply_rotation(volume=object, q=quaternions[i])
+        image = imaging_model(volume_rot)
 
-        # Compute the image
-        image = imaging_model(volume_new)
-
-        if imaging_model.microscopy_regime == 'sum_projection' or imaging_model.microscopy_regime == 'sum_projection_avg_weighted':
+        if imaging_model.microscopy_regime in ['sum_projection', 'sum_projection_avg_weighted']:
             projections[i, 0] = image.cpu().squeeze()
-
-        elif imaging_model.microscopy_regime in ['brightfield'] and ch == 2:
-
-            image = image * torch.exp(-1j * V0_phase)  # Phase correction
-            image = image - V0 + 1 # Background correction
-
+        elif imaging_model.microscopy_regime == 'brightfield' and ch == 2:
+            image = image * torch.exp(-1j * V0_phase)
+            image = image - V0 + 1
             projections[i, 0] = image.real.cpu().squeeze()
             projections[i, 1] = image.imag.cpu().squeeze()
-
-        elif imaging_model.microscopy_regime in ['darkfield', 'iscat', 'fluorescence', 'brightfield'] and ch == 1:
+        else:
             projections[i, 0] = image.cpu().squeeze().real
-    
+
     return object, quaternions, projections, imaging_model
+
 
 
 if __name__ == '__main__':
