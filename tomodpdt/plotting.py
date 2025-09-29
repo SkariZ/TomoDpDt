@@ -261,9 +261,15 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
 
     plt.show()
 
+    idx = torch.randint(0, tomo.frames.shape[0], (9,))
+    frames = tomo.frames[idx]
+
     tomo.vae_model.to(tomo.frames.device)
+
     recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
-    recon_vae_gt = tomo.frames[:9].cpu()
+
+
+    recon_vae_gt = frames.cpu()
 
     # Plot the reconstructed vs ground truth frames
     plot_reconstructed_vs_gt(recon_vae_pred, recon_vae_gt, save_name='recon_vs_gt_initial', save_folder=save_folder, dpi=dpi)
@@ -548,7 +554,7 @@ class TomoPlotter:
         self.plot_smooth_dist_intial_guess(q_gt=q_gt)
 
         # Plot the reconstructed vs ground truth frames
-        self.plot_reconstructed_vs_gt()
+        #self.plot_reconstructed_vs_gt()
 
     def plot_quaternion_diff(self, quaternions_pred, gt_q):
         """
