@@ -165,7 +165,7 @@ class imaging_model(nn.Module):
                 zscale=1,
             )
         ):
-            nz, ny, nx = obj.shape
+            nx, ny, nz = obj.shape
 
             # pad x/y if needed
             if self.padding_xy > 0:
@@ -174,7 +174,8 @@ class imaging_model(nn.Module):
                     (0, 0, self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy),
                     mode='constant', value=self.padding_value
                 ).permute(2, 1, 0)
-                nz, ny, nx = obj.shape
+
+                nx, ny, nz = obj.shape
 
             # brightfield, darkfield, iscat
             if self.microscopy_regime in {'brightfield', 'darkfield', 'iscat'}:

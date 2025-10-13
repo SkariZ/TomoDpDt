@@ -4,6 +4,7 @@ from scipy.signal import savgol_filter
 import scipy.signal as signal
 from scipy.linalg import svd
 import cv2
+from skimage.restoration import unwrap_phase
 
 
 def process_latent_space(
@@ -270,6 +271,99 @@ def classify_rotation_axis(flow_vectors):
         return "x"  # Horizontal rotation
     else:
         return "y"  # Vertical rotation
+
+
+def unwrap_phase_batch(E_batch):
+    """
+    Unwrap the phase for a batch of complex images.
+    
+    Parameters:
+    - E_batch: list or array of complex 2D arrays
+    
+    Returns:
+    - list of unwrapped phases
+    """
+    return [unwrap_phase(np.angle(E)) for E in E_batch]
+
+
+def cross_correlation_2d(a, b):
+    """
+    Compute normalized cross-correlation between two 2D arrays.
+    
+    Parameters:
+    - a, b: 2D arrays
+    
+    Returns:
+    - float: maximum of cross-correlation
+    """
+    fft_a = np.fft.fft2(a)
+    fft_b = np.fft.fft2(b)
+    cc = np.fft.ifft2(fft_a * fft_b)
+    return np.abs(cc).max()
+
+
+def compute_cc_series(PU):
+    """
+    Compute cross-correlation series relative to the first frame.
+    
+    Parameters:
+    - PU: list of 2D unwrapped phases
+    
+    Returns:
+    - np.ndarray: cross-correlation values
+    """
+    n = len(PU)
+    cc = [cross_correlation_2d(PU[0], PU[i]) for i in range(n)]
+    return np.array(cc)
+
+
+def compute_angles_from_peaks(cc, n_frames):
+    """
+    Compute angle timeline from cross-correlation peaks.
+    
+    Parameters:
+    - cc: cross-correlation series
+    - n_frames: total number of frames
+    
+    Returns:
+    - np.ndarray: interpolated angles
+    """
+
+    # Detect peaks
+    pks = signal.find_peaks(cc, width=10)[0]
+    
+    th = np.array([0.])
+    for i, pk in enumerate(pks):
+        th = np.r_[th, np.linspace(
+            i*np.pi,
+            (i+1)*np.pi,
+            (pks[i] - pks[i-1]) + 1 if i>0 else pks[i]
+        )[1:]]
+    
+    th = np.r_[th, np.linspace(
+        (i+1)*np.pi,
+        (i+1)*np.pi + np.pi * ((n_frames - pks[i]) / (pks[i] - pks[i-1])),
+        n_frames - pks[i] + 1
+    )[1:]]
+    
+    return th
+
+
+def quaternions_from_angles(th, n_quaternions):
+    """
+    Initialize quaternions along a single rotation axis (y-axis in this example).
+    
+    Parameters:
+    - th: array of angles
+    - n_quaternions: number of quaternions to generate
+    
+    Returns:
+    - np.ndarray: (N, 4) array of quaternions
+    """
+    Q_start = np.zeros((n_quaternions, 4))
+    Q_start[:, 0] = np.cos(-th / 2)  # w
+    Q_start[:, 2] = np.sin(-th / 2)  # y-axis rotation
+    return Q_start
 
 
 # Example usage

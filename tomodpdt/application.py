@@ -30,15 +30,16 @@ class Tomography(dl.Application):
                  imaging_model: Optional[torch.nn.Module] = None,
                  initial_volume: Optional[str] = None,  # Initial guess for volume
                  rotation_optim_case: Optional[str] = None,  # Rotation optimization case ('quaternion', 'basis')
-                 translation_maxmin = None,  # Max/min translation values, if None, no translation is applied.
                  optimizer = None,
                  volume_init = None,  # Initial guess for volume explicitly
                  minibatch = 16,
                  loss_weights = None,
+                 loss_weights_manual = None,
                  filter_volume: bool = True,
-                 learning_rate_volume: float = 5e-4,
-                 learning_rate_rotation: float = 8e-4,
-                 learning_rate_translation: float = 8e-4,
+                 learning_rate_volume: float = 3e-5,
+                 learning_rate_rotation: float = 1e-4,
+                 learning_rate_translation: float = 1e-4,
+                 automatic_optimization: bool = True,
                  **kwargs):
         
         # Set volume size and dimensions
@@ -64,37 +65,42 @@ class Tomography(dl.Application):
         # Set the rotation optimization case, default to "quaternion"
         self.rotation_optim_case = rotation_optim_case if rotation_optim_case is not None else "quaternion"
 
-        # Set the translation max/min values if provided
-        if translation_maxmin is not None and isinstance(translation_maxmin, (int, float)):
-            self.translation_maxmin = translation_maxmin
-            self.optimize_translation = True
-        else:
-            self.translation_maxmin = None
-            self.optimize_translation = False
-        
         # Set volume initialization (if provided)
         self.volume_init = volume_init
 
         # Set the minibatch size - default to 16 - can speed up training
         self.minibatch = minibatch
 
-        # Set the loss weights
+        # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 10.0,
-            'ssim_loss': 1.0,
-            'latent_loss': 0.25,
-            'rtv_loss': 1,
-            'qv_loss': 10,
-            'q0_loss': 0,
-            'rtr_loss': 10,
-            'rtr_trans_loss': 10,
-            'so_loss': 1e5
+            'ssim_loss': 0.25,
+            'latent_loss': 0.1,
+            'rtv_loss': 1.0,
+            'qv_loss': 10.0,
+            'q0_loss': 100.0,
+            'rtr_loss': 1.0,
+            'rtr_trans_loss': 10.0,
+            'so_loss': 10.0
             }
         
+        # Set the loss weights for automatic optimization (only projection, rtv and rtr losses)
+        self.loss_weights_manual = loss_weights_manual if loss_weights_manual is not None else {
+            'proj_loss': 1.0,
+            'rtv_loss': 7.0,
+            'rtr_loss': 5.0,
+            }
+        self.lr_volume_manual = 5.0
+        self.lr_q_manual = 1.0
+        self.lr_t_manual = 3.0
+
         # Raise error if loss weights don´t contain all the necessary keys
         if not all(k in self.loss_weights for k in ['proj_loss', 'ssim_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
         
+        if not all(k in self.loss_weights_manual for k in ['proj_loss', 'rtv_loss', 'rtr_loss']):
+            raise ValueError("Loss weights must contain all the necessary keys.")
+
         # Set the filter volume flag
         self.filter_volume = filter_volume
 
@@ -111,10 +117,10 @@ class Tomography(dl.Application):
 
         # Set the imaging model function if 'projection' is selected
         if self.imaging_model == None:
-            def projection(volume):
+            def projection_fun(volume):
                 # Simple projection summing along one axis
                 return torch.sum(volume, dim=-1)
-            self.imaging_model = projection
+            self.imaging_model = projection_fun
 
         # Store normalized voxel-space grid for single volume
         lin_x = torch.linspace(-1, 1, self.nx, device=self._device)
@@ -122,7 +128,7 @@ class Tomography(dl.Application):
         lin_z = torch.linspace(-1, 1, self.nz, device=self._device)
 
         xx, yy, zz = torch.meshgrid(lin_x, lin_y, lin_z, indexing='ij')
-        grid = torch.stack([zz, yy, xx], dim=-1)
+        grid = torch.stack([xx, yy, zz], dim=-1)
         self.grid = grid.view(self.nx, self.ny, self.nz, 3)  # (nx, ny, nz, 3)
 
         # Store flat normalized grid for batch processing
@@ -145,50 +151,78 @@ class Tomography(dl.Application):
                 nn.Sigmoid(),
             )
 
+        # Set automatic optimization flag
+        self.automatic_optimization = automatic_optimization
+
     def initialize_parameters(self, projections, **kwargs):
         """
-        Function to initialize the parameters of the model, 
-        set the initial rotation parameters and other settings.
+        Initialize model parameters:
+        - Normalize projections
+        - Train VAE (with padded data if necessary)
+        - Compute latent space and rotation initialization
+        - Initialize volume and translation parameters
         """
-        # Check if projections are a tensor
+
+        # -------------------------------------------------------
+        # --- 0. Input preparation and safe copies
+        # -------------------------------------------------------
         if not isinstance(projections, torch.Tensor):
             projections = torch.tensor(projections)
-        
-        # Move projections to the device
+
+        # Move to device
         projections = projections.to(self._device)
 
-        # Save a clone of the original projections for now
-        projections_original = projections.clone()
+        # Save a clone of the *original*, unpadded projections (on CPU for safety)
+        projections_orig = projections.clone().detach().cpu()
 
-        # Compute the global min/max values per channel over the entire dataset
+        # Compute and store global min/max values for normalization
         self.compute_global_min_max(projections)
 
-        # Set the number of channels
+        # Number of channels
         self.CH = projections.shape[1]
-         
-        # Normalize projections
-        if 'normalize' in kwargs and kwargs['normalize']:
-            # Compute the global min/max values per channel over the entire dataset
+
+        # -------------------------------------------------------
+        # --- 1. Normalization and optional field correction
+        # -------------------------------------------------------
+        if kwargs.get('normalize', False):
             projections = self.per_channel_normalization(projections)
             self.normalize = True
-        
-        if 'field_normalize' in kwargs and kwargs['field_normalize']:
-            # Normalize the projections per channel using precomputed global min/max scaling
+
+        if kwargs.get('field_normalize', False):
             projections = self.correctfield(projections)
 
-        # Build or rebuild the VAE to match channels and padded size
+        # -------------------------------------------------------
+        # --- 2. VAE setup (pad data to multiple of 8 if needed)
+        # -------------------------------------------------------
         if self.CH > 0 and min([self.nx, self.ny]) >= 24:
             _, C, H, W = projections.shape
+            self.H_orig, self.W_orig = H, W
 
-            # Pad H and W to be divisible by 8 (VAE-friendly)
+            # Compute padding so that H,W are divisible by 8 (for ConvVAE)
             pad_h = (8 - H % 8) % 8
             pad_w = (8 - W % 8) % 8
             pad_top, pad_bottom = pad_h // 2, pad_h - pad_h // 2
             pad_left, pad_right = pad_w // 2, pad_w - pad_w // 2
-            projections = F.pad(projections, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
-            self.H_padded, self.W_padded = projections.shape[2], projections.shape[3]
 
-            # Build VAE with correct input channels
+            # Create padded tensor (new variable, do not overwrite projections_orig)
+            projections_padded = F.pad(
+                projections, (pad_left, pad_right, pad_top, pad_bottom),
+                mode='constant', value=0
+            )
+            self.H_padded, self.W_padded = projections_padded.shape[2], projections_padded.shape[3]
+
+            # Estimate beta
+            if self.normalize:
+                self.vae_model.beta = 0.025
+            else:
+                r_loss = torch.mean(torch.abs(projections_padded - torch.mean(projections_padded)))
+                kl_loss = 0.5 * torch.mean(torch.sum(
+                    1 + torch.zeros(C, 2) - torch.zeros(C, 2).exp() - torch.zeros(C, 2).pow(2), dim=1
+                ))
+                ratio = r_loss / (kl_loss + 1e-8)
+                self.vae_model.beta = 1e-5 if ratio > 1 else 1e-6
+
+            # Build VAE to match padded dimensions
             vae = vm.ConvVAE(
                 input_shape=(self.CH, self.H_padded, self.W_padded),
                 latent_dim=2,
@@ -199,61 +233,80 @@ class Tomography(dl.Application):
             self.vae_model.fc_mu = vae.fc_mu
             self.vae_model.fc_var = vae.fc_var
             self.vae_model.fc_dec = vae.fc_dec
-            self.vae_model.beta = 0.025 if self.normalize else 1e-5
             if not self.normalize:
                 self.vae_model.reconstruction_loss = torch.nn.L1Loss()
+        else:
+            # No padding needed
+            projections_padded = projections
+            self.H_padded, self.W_padded = projections.shape[2:]
 
-        # Train the VAE model if not already trained
+        # -------------------------------------------------------
+        # --- 3. Train VAE (only on padded data)
+        # -------------------------------------------------------
         if self.vae_model.training:
-            self.train_vae(projections, **kwargs)
+            self.train_vae(projections_padded, **kwargs)
 
-        # Compute latent space
-        latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
+        # -------------------------------------------------------
+        # --- 4. Latent space & rotation initialization
+        # -------------------------------------------------------
+        latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections_padded))
         self.latent = latent_space
 
-        # Retrieve the initial rotation parameters
+        # Determine rotation initialization from latent space
         self.rotation_initial_dict = erfl.process_latent_space(
             z=latent_space,
-            frames=projections,
+            frames=projections_padded,  # optical flow / latent smoothness uses padded data
             **kwargs
         )
 
-        # Set the rotation parameters
+        # -------------------------------------------------------
+        # --- 5. Set rotation parameters
+        # -------------------------------------------------------
         if self.rotation_optim_case == 'quaternion':
             rotation_params = self.rotation_initial_dict['quaternions']
         elif self.rotation_optim_case == 'basis':
             rotation_params = self.rotation_initial_dict['coeffs']
             self.basis = self.rotation_initial_dict['basis']
         else:
-            raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'. as of now...")
-        
-        # Move the rotation parameters to the device and make them nn.Parameters
+            raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'.")
+
         self.rotation_params = nn.Parameter(rotation_params.to(self._device))
 
-        # Initialize the volume
+        # Determine number of frames needed for optimization
+        N_frames_needed = self.rotation_initial_dict["peaks"][-1].item()
+
+        # -------------------------------------------------------
+        # --- 6. Initialize volume
+        # -------------------------------------------------------
         self.initialize_volume()
 
-        # Initialize the translation parameters if needed
-        if self.optimize_translation:
-            self.initialize_translation(N=self.rotation_initial_dict["peaks"][-1].item())
-        else:
-            self.initialize_translation(N=self.rotation_initial_dict["peaks"][-1].item())
-            self.toggle_gradients_rotation_translation(False)  # Freeze translation parameters if not optimizing
+        # -------------------------------------------------------
+        # --- 7. Initialize translation parameters as zeros
+        # -------------------------------------------------------
+        self.initialize_translation(N_frames_needed)
+        
+        # -------------------------------------------------------
+        # --- 8. Restore self.frames to ORIGINAL (unpadded) shape
+        # -------------------------------------------------------
+        self.frames = projections_orig[:N_frames_needed].to(self._device)
+        assert self.frames.shape[2] == self.H_orig, (
+            f"Unexpected padded frames: got H={self.frames.shape[2]}, expected {self.H_orig}"
+        )
 
-        # Setting frames to the number of rotations
-        self.frames = projections_original[:self.rotation_initial_dict["peaks"][-1].item()]
-
-        # self.optimizer = torch.optim.Adam(self.parameters(), lr=8e-4)
+        # -------------------------------------------------------
+        # --- 9. Optional optimizer registration
+        # -------------------------------------------------------
         @self.optimizer.params
         def params(self):
             return self.parameters()
-        
-        # C ompute the initial volume V0 for subtraction of the background (for field correction)
-        self.V0 = self.imaging_model(self.volume*0).detach()
+
+        # -------------------------------------------------------
+        # --- 10. Background correction initialization
+        # -------------------------------------------------------
+        self.V0 = self.imaging_model(self.volume * 0).detach()
         if self.V0.dtype == torch.complex64:
             self.V0_phase = torch.median(torch.angle(self.V0))
-            self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)  # Phase correction
-
+            self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
 
     def configure_optimizers(self):
         param_groups = []
@@ -271,11 +324,11 @@ class Tomography(dl.Application):
         if len(param_groups) == 0:
             raise ValueError("No parameters to optimize. Check if any parameters have requires_grad=True.")
         else:
-            optimizer = torch.optim.Adam(param_groups)
+            optimizer = torch.optim.RMSprop(param_groups)
 
             scheduler = {
                 'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode='min', factor=0.75, patience=15, threshold=1e-3, min_lr=1e-6
+                    optimizer, mode='min', factor=0.75, patience=10, threshold=1e-3, min_lr=1e-6
                 ),
                 'monitor': 'train_total_loss',
             }
@@ -382,7 +435,7 @@ class Tomography(dl.Application):
             self.volume = nn.Parameter(cloud.to(self._device))
 
         elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device) + 1e-6)
+            self.volume = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device))
 
         elif self.initial_volume == 'refraction':
             self.volume = nn.Parameter(torch.ones(nx, ny, nz, device=self._device) * 1.33)
@@ -411,8 +464,7 @@ class Tomography(dl.Application):
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
         """
-        volume = self.volume
-        
+   
         # Preprocess the volume
         #if self.filter_volume:
         #    volume = self.convolution_3d_model(volume.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
@@ -434,7 +486,7 @@ class Tomography(dl.Application):
         for b in b_idx:
             # Apply rotations to a single volume using a batch of quaternions
             rotated_volumes = self.apply_rotation_batch(
-                volume, 
+                self.volume, 
                 quaternions[b], 
                 translations=translations[b] if translations is not None else None
             )
@@ -447,8 +499,6 @@ class Tomography(dl.Application):
                     # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projections.dtype == torch.complex64:
                         estimated_projections = estimated_projections.imag
-
-                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
                 
                 # If two channels are present, concatenate them - for complex valued projections
                 elif self.CH > 1 and estimated_projections.dtype == torch.complex64:
@@ -456,16 +506,13 @@ class Tomography(dl.Application):
                     estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)  # Phase correction
                     estimated_projections = estimated_projections - self.V0  + 1 # Subtract the initial volume to remove the background
 
-                    # estimated_projections = self.correctfield(estimated_projections)
-
                     # Concatenate real and imaginary parts along the last dimension
                     estimated_projections = torch.concatenate(
                         (estimated_projections.real, estimated_projections.imag),
                         axis=-1)
-                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
 
-                elif self.CH > 1:
-                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
+                # Permute to (B, C, H, W). I.e move the channels to the second dimension
+                estimated_projections = estimated_projections.permute(0, 3, 1, 2)
 
                 # Add the estimated projections to the batch
                 estimated_projections_batch[b] = estimated_projections
@@ -475,171 +522,301 @@ class Tomography(dl.Application):
 
         return estimated_projections_batch
     
-    def training_step(self, batch, batch_idx):
+    def training_step(self, batch):
         """
         Training step for the model. Computes the loss and logs it.
         """
-
-        # Get the batch of frames and the corresponding indices
+        # Get indices and corresponding frames
         idx_batch = batch
         frames_batch = self.frames[idx_batch]
 
-        # Forward step - Estimate the projections
-        yhat = self.forward(idx_batch) 
+        # Safely unpad to original size. Don´t know why this is needed, but sometimes the frames are padded...
+        if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
+            frames_batch = self.unpad_to_original(frames_batch)
 
-        # Normalize the estimated projections
+        # Forward pass: estimate projections
+        yhat = self.forward(idx_batch)
+
+        # Normalize predictions if required
         if self.normalize:
             yhat = self.per_channel_normalization(yhat)
 
-        # Only for VAE: pad yhat if needed
-        if self.H_padded != yhat.shape[2] or self.W_padded != yhat.shape[3]:
-            pad_h = self.H_padded - yhat.shape[2]
-            pad_w = self.W_padded - yhat.shape[3]
-            pad_top = pad_h // 2
-            pad_bottom = pad_h - pad_top
-            pad_left = pad_w // 2
-            pad_right = pad_w - pad_left
-            yhat_vae = F.pad(yhat, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
-        else:
-            yhat_vae = yhat
+        if self.automatic_optimization == True:
 
-        # Compute latent space with padded yhat
-        with torch.no_grad():
-            latent_space = self.fc_mu(self.encoder(yhat_vae))
+            # Prepare VAE input (pad yhat if necessary)
+            yhat_vae = self.pad_for_vae(yhat, self.H_padded, self.W_padded)
         
-        # Compute the losses
-        proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss = self.compute_loss(
-            yhat, latent_space, frames_batch, idx_batch, self.loss_weights
+            # Compute latent space from VAE
+            with torch.no_grad():
+                latent_space = self.fc_mu(self.encoder(yhat_vae))
+
+            # Compute all losses
+            proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss = self.compute_loss_old(
+                yhat, latent_space, frames_batch, idx_batch, self.loss_weights
             )
 
-        # Compute the total loss
-        tot_loss = proj_loss + ssim_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + rtr_trans_loss + so_loss
+            # Total loss
+            tot_loss = proj_loss + ssim_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + rtr_trans_loss + so_loss
 
-        loss = {
-            "total_loss": tot_loss,
-            "proj_loss": proj_loss,
-            "ssim_loss": ssim_loss, 
-            "latent_loss": latent_loss, 
-            "rtv_loss": rtv_loss, 
-            "qv_loss": qv_loss, 
-            "q0_loss": q0_loss,
-            "rtr_loss": rtr_loss,
-            "rtr_trans_loss": rtr_trans_loss,
-            "so_loss": so_loss,
+            # Log losses
+            loss_dict = {
+                "total_loss": tot_loss,
+                "proj_loss": proj_loss,
+                "ssim_loss": ssim_loss,
+                "latent_loss": latent_loss,
+                "rtv_loss": rtv_loss,
+                "rtr_loss": rtr_loss,
+                "qv_loss": qv_loss,
+                "q0_loss": q0_loss,
+                "rtr_trans_loss": rtr_trans_loss,
+                "so_loss": so_loss,
             }
+            # Only keep non-zero losses
+            loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
+
+            for name, value in loss_dict.items():
+                self.log(
+                    f"train_{name}",
+                    value,
+                    on_step=True,
+                    on_epoch=True,
+                    prog_bar=True,
+                    logger=True,
+                )
+            return tot_loss
         
-        # Remove the losses that are not used i.e they are 0 for nice logging.
-        loss = {k: v for k, v in loss.items() if v.item() > 0}
-
-        for name, v in loss.items():
-            self.log(
-                f"train_{name}",
-                v,
-                on_step=True,
-                on_epoch=True,
-                prog_bar=True,
-                logger=True,
+        # Manual optimization
+        elif self.automatic_optimization == False:
+            
+            # Compute all losses
+            proj_loss, rtv_loss, rtr_loss = self.compute_loss(
+                yhat, frames_batch, self.loss_weights_manual
             )
-        return tot_loss
-    
-    def compute_loss(self, yhat, latent_space, frames_batch, idx_batch, loss_weights=None):
-        """
-        Compute the projection loss, latent loss, and other regularization terms.
-        """
 
-        # Compute the projection loss - MAE of the subtracted frames
-        if torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1:
-            proj_loss_diff = F.l1_loss(yhat[1:] - yhat[:-1], frames_batch[1:] - frames_batch[:-1]) * 5
+            # Total loss
+            tot_loss = proj_loss + rtv_loss + rtr_loss
+
+            # Log losses
+            loss_dict = {
+                "total_loss": tot_loss,
+                "proj_loss": proj_loss,
+                "rtv_loss": rtv_loss,
+                "rtr_loss": rtr_loss,
+            }
+            # Only keep non-zero losses
+            loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
+
+            for name, value in loss_dict.items():
+                self.log(
+                    f"train_{name}",
+                    value,
+                    on_step=True,
+                    on_epoch=True,
+                    prog_bar=True,
+                    logger=True,
+                )
+            
+            # Backward
+            self.manual_backward(tot_loss)
+
+            # --- Manual parameter updates ---
+            with torch.no_grad():
+                # dRI update (clipped)
+                self.volume -= self.lr_volume_manual * self.volume.grad
+                self.volume.clamp_(0., 1.)
+
+                if self.rotation_params.requires_grad == True:
+                    # Q update (renormalize quaternions)
+                    if self.rotation_optim_case == 'quaternion':
+                        self.rotation_params -= self.lr_q_manual * self.rotation_params.grad
+                        self.rotation_params[:] = self.rotation_params / self.rotation_params.norm(dim=1, keepdim=True)
+
+                    # Q update (basis)
+                    elif self.rotation_optim_case == 'basis':
+                        self.rotation_params -= self.lr_q_manual * self.rotation_params.grad
+                        # Recompute quaternions from basis
+                        quaternions = self.get_quaternions(self.rotation_params)
+                        quaternions_norm = quaternions / quaternions.norm(dim=1, keepdim=True)
+
+                        # Generate the basis functions. Solve the least squares problem to find the coefficients
+                        coeffs = torch.linalg.lstsq(self.basis, quaternions_norm).solution
+                        # Update the rotation parameters with the new coefficients
+                        self.rotation_params.data = coeffs
+
+                if self.translation_params.requires_grad == True:
+                    # T update (translations)
+                    self.translation_params -= self.lr_t_manual * self.translation_params.grad
+
+                # Zero gradients
+                self.volume.grad = None
+                self.rotation_params.grad = None
+                self.translation_params.grad = None
+
+                return tot_loss
         else:
-            proj_loss_diff = torch.tensor(0.0, device=self._device)
+            raise ValueError("Invalid automatic_optimization value. Must be True or False.")
 
-        # Compute the projection loss
-        proj_loss = F.l1_loss(yhat, frames_batch) + proj_loss_diff
+    def pad_for_vae(self, tensor, H_padded, W_padded):
+        """
+        Pads a tensor to the desired VAE input size.
+        Args:
+            tensor (torch.Tensor): Shape (B, C, H, W)
+            H_padded (int): Desired height
+            W_padded (int): Desired width
+        Returns:
+            torch.Tensor: Padded tensor
+        """
+        H, W = tensor.shape[2], tensor.shape[3]
+        pad_h = H_padded - H
+        pad_w = W_padded - W
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
+        return F.pad(tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
 
-        # Compute the SSIM loss
-        ssim_metric = SSIM(data_range=1.0 if self.normalize else torch.max(frames_batch) - torch.min(frames_batch)).to(self._device)
-        ssim_loss = 1 - ssim_metric(yhat, frames_batch)
+    def unpad_to_original(self, tensor):
+        """Crop tensor symmetrically back to original (unpadded) size."""
+        _, _, H, W = tensor.shape
+        pad_h = (H - self.H_orig)
+        pad_w = (W - self.W_orig)
+        pad_top = pad_h // 2
+        pad_bottom = pad_h - pad_top
+        pad_left = pad_w // 2
+        pad_right = pad_w - pad_left
 
-        # Compute the latent loss - distance in latent space between the estimated and true latent space in MAE
-        latent_loss = F.l1_loss(latent_space, self.latent[idx_batch])
+        return tensor[:, :, pad_top:H - pad_bottom, pad_left:W - pad_right]
 
-        # Compute the total variation regularization term
+    def projection_loss(self, yhat, frames_batch):
+        """
+        Compute the projection loss using Mean Squared Error (MSE).
+        """
+
+        # If more than one channel is present make it a complex valued projection
+        if self.CH == 2 and yhat.dtype == torch.float32:
+            yhat = yhat[:, 0] + 1j * yhat[:, 1]
+            frames_batch = frames_batch[:, 0] + 1j * frames_batch[:, 1]
+
+        return torch.square(torch.abs(yhat - frames_batch)).mean()
+
+    def compute_loss(self, yhat, frames_batch, loss_weights=None):
+        """
+        Compute the projection loss, latent loss, SSIM, and all regularization terms.
+        Uses MSE instead of L1 for projections and latent space.
+        Rotation/translation trajectory regularization is computed on the full trajectory.
+        """
+
+        # === Projection loss (MSE) ===
+        proj_loss = self.projection_loss(yhat, frames_batch)
+
+        # === TV regularization on volume ===
         if self.volume.requires_grad:
             rtv_loss = self.total_variation_regularization(self.volume)
         else:
             rtv_loss = torch.tensor(0.0, device=self._device)
 
-        # This is the predicted quaternions
-        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion' or self.rotation_optim_case == 'basis':
-            quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
-
-        # This is the predicted translations
-        if self.optimize_translation and self.translation_params is not None:
-            translations_pred = self.get_translations(self.translation_params)[idx_batch]
-
-        # Compute the quaternion validity loss
-        if self.rotation_params.requires_grad:
-            qv_loss = self.quaternion_validity_loss(
-                quaternions_pred
-                )
-        else:
-            qv_loss = torch.tensor(0.0, device=self._device)
-
-        # Compute the q0 constraint loss if 0 is in the indices and gradients for rotation parameters are enabled
-        if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0:
-            q0_loss = self.q0_constraint_loss(
-                quaternions_pred[idx_batch == 0]
-                )
-        else:
-            q0_loss = torch.tensor(0.0, device=self._device)
-
-        # Compute the rotational trajectory regularization term if the indices are consecutive and optimization case is 'quaternion' and not 'basis'
-        if self.rotation_params.requires_grad and torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1 and self.rotation_optim_case == 'quaternion':
-            rtr_loss = self.rotational_trajectory_regularization(
-                quaternions_pred
-                )
+        # === Rotational trajectory regularization (computed on full trajectory, not batch only) ===
+        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion':
+            quaternions_full = self.get_quaternions(self.rotation_params)   # full trajectory
+            rtr_loss = self.rotational_trajectory_regularization(quaternions_full, loss_weights['rtr_loss'], loss_weights['rtr_loss'])
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
 
-        # Compute the trajectory regularization term for the translations
-        if self.translation_params.requires_grad and self.optimize_translation and translations_pred is not None and torch.abs(idx_batch[1:] - idx_batch[:-1]).sum() == len(idx_batch) - 1:
-            rtr_trans_loss = self.rotational_trajectory_regularization(
-                translations_pred
-                )
+        # === Scale the losses ===
+        if loss_weights is not None and isinstance(loss_weights, dict):
+            proj_loss *= loss_weights['proj_loss']
+            rtv_loss *= loss_weights['rtv_loss']
+            #rtr_loss *= loss_weights['rtr_loss']
+        else:
+            # Default weights
+            proj_loss *= 1.0
+            rtv_loss *= 7.0
+            # rtr_loss *= 5.0
+
+        return proj_loss, rtv_loss, rtr_loss
+
+    def compute_loss_old(self, yhat, latent_space, frames_batch, idx_batch, loss_weights=None):
+        """
+        Compute the projection loss, latent loss, SSIM, and all regularization terms.
+        Uses MSE instead of L1 for projections and latent space.
+        Rotation/translation trajectory regularization is computed on the full trajectory.
+        """
+
+        # === Projection loss (MSE) ===
+        proj_loss = self.projection_loss(yhat, frames_batch)
+
+        # === SSIM loss ===
+        ssim_metric = SSIM(
+            data_range=1.0 if self.normalize else torch.max(frames_batch) - torch.min(frames_batch)
+        ).to(self._device)
+        ssim_loss = 1 - ssim_metric(yhat, frames_batch)
+
+        # === Latent loss (MSE) ===
+        latent_loss = F.mse_loss(latent_space, self.latent[idx_batch])
+
+        # === TV regularization on volume ===
+        if self.volume.requires_grad:
+            rtv_loss = self.total_variation_regularization(self.volume)
+        else:
+            rtv_loss = torch.tensor(0.0, device=self._device)
+
+        # === Quaternion validity loss ===
+        if self.rotation_params.requires_grad:
+            quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
+            qv_loss = self.quaternion_validity_loss(quaternions_pred)
+        else:
+            qv_loss = torch.tensor(0.0, device=self._device)
+
+        # === q0 constraint loss (only if idx_batch contains 0) ===
+        if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0:
+            q0_loss = self.q0_constraint_loss(
+                quaternions_pred[idx_batch == 0]
+            )
+        else:
+            q0_loss = torch.tensor(0.0, device=self._device)
+
+        # === Rotational trajectory regularization (computed on full trajectory, not batch only) ===
+        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion':
+            quaternions_full = self.get_quaternions(self.rotation_params)   # full trajectory
+            rtr_loss = self.rotational_trajectory_regularization(quaternions_full)
+        else:
+            rtr_loss = torch.tensor(0.0, device=self._device)
+
+        # === Translation trajectory regularization (full trajectory) ===
+        if self.translation_params is not None and self.translation_params.requires_grad:
+            translations_full = self.get_translations(self.translation_params)  # full trajectory
+            rtr_trans_loss = self.rotational_trajectory_regularization(translations_full)
         else:
             rtr_trans_loss = torch.tensor(0.0, device=self._device)
-
-        # Compute the strictly over loss
+        # === Strictly over loss on volume ===
         if self.volume.requires_grad:
-            if self.initial_volume == 'refraction':
-                so_loss = self.strictly_over_loss(self.volume)
-            else:
-                so_loss = self.strictly_over_loss(self.volume, value=0)
+            so_loss = self.strictly_over_loss(self.volume, value=0)
         else:
             so_loss = torch.tensor(0.0, device=self._device)
 
-        # Scale the losses
+        # === Scale the losses ===
         if loss_weights is not None and isinstance(loss_weights, dict):
-            proj_loss *= loss_weights['proj_loss']
-            ssim_loss *= loss_weights['ssim_loss']
-            latent_loss *= loss_weights['latent_loss']
-            rtv_loss *= loss_weights['rtv_loss']
-            qv_loss *= loss_weights['qv_loss']
-            q0_loss *= loss_weights['q0_loss']
-            rtr_loss *= loss_weights['rtr_loss']
-            rtr_trans_loss *= loss_weights['rtr_trans_loss']
-            so_loss *= loss_weights['so_loss']
+            proj_loss *= self.loss_weights['proj_loss']
+            ssim_loss *= self.loss_weights['ssim_loss']
+            latent_loss *= self.loss_weights['latent_loss']
+            rtv_loss *= self.loss_weights['rtv_loss']
+            qv_loss *= self.loss_weights['qv_loss']
+            q0_loss *= self.loss_weights['q0_loss']
+            rtr_loss *= self.loss_weights['rtr_loss']
+            rtr_trans_loss *= self.loss_weights['rtr_trans_loss']
+            so_loss *= self.loss_weights['so_loss']
         else:
+            # Default weights
             proj_loss *= 10
-            ssim_loss *= 1
-            latent_loss *= 0.025
+            ssim_loss *= 0.25
+            latent_loss *= 0.1
             rtv_loss *= 1
             qv_loss *= 10
             q0_loss *= 100
             rtr_loss *= 10
             rtr_trans_loss *= 10
-            so_loss *= 1e5
-        
+            so_loss *= 10
+
         return proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss
 
     def strictly_over_loss(self, volume, value=1.33):
@@ -649,7 +826,7 @@ class Tomography(dl.Application):
         loss = torch.sum(torch.relu(value - volume))  # Penalize values below 
         return loss / volume.numel()  # Normalize by total elements
 
-    def total_variation_regularization(self, delta_n):
+    def total_variation_regularization(self, delta_n, beta=1e-10):
         """
         Calculate the total variation regularization term in 3D without creating large intermediate tensors.
 
@@ -660,12 +837,16 @@ class Tomography(dl.Application):
         - R_TV (float): The total variation regularization term.
         """
         # Compute gradients and sum them inline to avoid intermediate tensors
-        grad_x_sum = torch.sum(torch.abs(delta_n[1:, :, :] - delta_n[:-1, :, :]))  # Gradient in x-direction
-        grad_y_sum = torch.sum(torch.abs(delta_n[:, 1:, :] - delta_n[:, :-1, :]))  # Gradient in y-direction
-        grad_z_sum = torch.sum(torch.abs(delta_n[:, :, 1:] - delta_n[:, :, :-1]))  # Gradient in z-direction
+        # grad_x_sum = torch.sum(torch.abs(delta_n[1:, :, :] - delta_n[:-1, :, :]))  # Gradient in x-direction
+        # grad_y_sum = torch.sum(torch.abs(delta_n[:, 1:, :] - delta_n[:, :-1, :]))  # Gradient in y-direction
+        # grad_z_sum = torch.sum(torch.abs(delta_n[:, :, 1:] - delta_n[:, :, :-1]))  # Gradient in z-direction
+
+        grad_x = torch.diff(delta_n, dim=0, append=delta_n[-1, None])
+        grad_y = torch.diff(delta_n, dim=1, append=delta_n[:, -1, None])
+        grad_z = torch.diff(delta_n, dim=2, append=delta_n[:, :, -1, None])
 
         # Combine all gradient sums
-        R_TV = (grad_x_sum + grad_y_sum + grad_z_sum) / delta_n.numel()
+        R_TV = torch.sqrt(grad_x**2 + grad_y**2 + grad_z**2 + beta).sum() / delta_n.numel()#(grad_x_sum + grad_y_sum + grad_z_sum) / delta_n.numel()
 
         return R_TV
 
@@ -695,7 +876,7 @@ class Tomography(dl.Application):
         q_start = torch.tensor([1, 0, 0, 0], device=self._device)
         return torch.sum((q - q_start)**2)
 
-    def rotational_trajectory_regularization(self, q):
+    def rotational_trajectory_regularization(self, q, λ1=1.0, λ2=1.0):
         """
         Faster rotational trajectory regularization term.
         
@@ -705,30 +886,20 @@ class Tomography(dl.Application):
         Returns:
         - reg_terms (float): Regularization value
         """
-        # Compute first and second-order differences directly
-        first_diff = torch.diff(q, dim=0)  # Shape: (T-1, d)
-        second_diff = torch.diff(first_diff, dim=0)  # Shape: (T-2, d)
-
-        # Compute squared norms (avoid .norm() call for speed)
-        first_order_loss = torch.sum(first_diff ** 2, dim=1)  # (T-1,)
-        second_order_loss = torch.sum(second_diff ** 2, dim=1)  # (T-2,)
-
-        # Combine and normalize
-        reg_terms = (torch.sum(first_order_loss) + torch.sum(second_order_loss)) / q.size(0)
-
-        return reg_terms
+        qd = torch.diff(q, axis=0)
+        qdd = torch.diff(qd, axis=0)
+        
+        return (λ1 * torch.sum(torch.square(qd)) + λ2 * torch.sum(torch.square(qdd))) / q.shape[0]
 
     def get_translations(self, raw_translation):
 
-        if self.optimize_translation:
-            max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
-            return max_translation * torch.tanh(raw_translation)
-        
-        elif raw_translation is not None:
-            return raw_translation
-        
-        else:
+        """
+        Get translations from the translation parameters."""
+
+        if raw_translation is None:
             return None
+        else:
+            return raw_translation
 
     def get_quaternions(self, rotations=None):
         """
@@ -754,6 +925,9 @@ class Tomography(dl.Application):
         """
         qw, qx, qy, qz = q.unbind()
 
+        eps = 1e-8
+        q = q / (q.norm() + eps)  # Normalize quaternion
+
         # Compute the elements of the rotation matrix directly from quaternion components
         R = torch.stack([
             torch.stack([1 - 2 * (qy**2 + qz**2), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw)], dim=-1),
@@ -765,7 +939,9 @@ class Tomography(dl.Application):
 
     def quaternion_to_rotation_matrix_batch(self, q):
         """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
-        q = q / q.norm(dim=1, keepdim=True)  # Normalize quaternions batchwise
+        eps = 1e-8
+
+        q = q / (q.norm(dim=1, keepdim=True) + eps)  # Normalize quaternions batchwise
         w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
         R = torch.stack([
@@ -777,7 +953,7 @@ class Tomography(dl.Application):
         return R
 
     def apply_rotation(self, volume, q, translations=None):
-        q = q / q.norm()
+
         R = self.quaternion_to_rotation_matrix(q)  # (3,3)
 
         # Prepare volume: add batch and channel dims if needed
@@ -810,6 +986,7 @@ class Tomography(dl.Application):
         return rotated_volume.squeeze(0).squeeze(0)
 
     def apply_rotation_batch(self, volume, quaternions, translations=None):
+
         """
         Applies a batch of rotations (and optional translations) to a single 3D volume.
 
@@ -822,6 +999,7 @@ class Tomography(dl.Application):
         Returns:
             torch.Tensor: Rotated volumes of shape (B, D, H, W).
         """
+
         if volume.dim() == 3:
             volume = volume.unsqueeze(0)  # (1, D, H, W)
         volume = volume.unsqueeze(0)  # (1, 1, D, H, W)
@@ -871,89 +1049,27 @@ class Tomography(dl.Application):
         Returns:
         - estimated_projections (torch.Tensor): Estimated projections.
         """
-        if self.rotation_optim_case == 'basis':
-            self.basis = self.basis.to(self._device)
 
-        self.rotation_params = self.rotation_params.to(self._device)
+        N = self.rotation_params.shape[0]
 
-        # Get the quaternions
-        quaternions = self.get_quaternions(self.rotation_params).to(self._device)
+        if rand_idx:
+            indexes = indexes[torch.randperm(indexes.shape[0])]
 
-        # Get the translations
-        translations = self.get_translations(self.translation_params).to(self._device)
-
-        # Get the volume
-        volume = self.volume.to(self._device)
-
-        #Set the grid to the device as well...
-        self.grid = self.grid.to(self._device)
-        self.grid_batch = self.grid_batch.to(self._device)
-
-        # Set the global min/max values to the device
-        self.global_min = self.global_min.to(self._device)
-        self.global_max = self.global_max.to(self._device)
-
-        # If max_projections is not None, set the number of projections to max_projections. Saves time and memory.
-        if max_projections is not None and max_projections < quaternions.shape[0] and rand_idx is False and idx is None:
-            quaternions = quaternions[:max_projections]
-            translations = translations[:max_projections] if translations is not None else None
-        # If idx is provided, select the quaternions and translations for the given indices
         elif idx is not None:
-            quaternions = quaternions[idx]
-            translations = translations[idx] if translations is not None else None
-        elif rand_idx:
-            # If rand_idx is True, randomly select max_projections indices from the quaternions
-            if max_projections is None or max_projections > quaternions.shape[0]:
-                max_projections = quaternions.shape[0]
-            rand_indices = torch.randperm(quaternions.shape[0])[:max_projections]
-            quaternions = quaternions[rand_indices]
-            translations = translations[rand_indices] if translations is not None else None
+            N = len(idx)
+            indexes = torch.tensor(idx, device=self._device)
+        else:
+            indexes = torch.arange(0, N, device=self._device)
 
-        # Initialize the estimated projections
-        estimated_projections = torch.zeros(quaternions.shape[0], self.CH, self.nx, self.ny, device=self._device)
+        if max_projections is not None and N > max_projections:
+            indexes = indexes[:max_projections]
 
-        # Rotate the volume and estimate the projections
-        for i in range(quaternions.shape[0] - 1):
-            rotated_volume = self.apply_rotation_batch(
-                volume, 
-                quaternions[i:i+1], 
-                translations=translations[i:i+1] if translations is not None else None
-                ).squeeze(0)  # Remove batch dimension
+        N = len(indexes)
 
-            # Check if imaging model is a nn.Module
-            if isinstance(self.imaging_model, nn.Module):
-                estimated_projection = self.imaging_model(rotated_volume)
-
-                if self.CH == 1:
-
-                    # Check if the estimated projection is complex and take the imaginary part
-                    if estimated_projection.dtype == torch.complex64:
-                        estimated_projection = estimated_projection.imag
-                    
-                    estimated_projection = estimated_projection.permute(2, 0, 1)
-
-                # If two channels are present, concatenate them - for complex valued projections
-                elif self.CH > 1 and estimated_projection.dtype == torch.complex64:
-
-                    estimated_projection = estimated_projection * torch.exp(-1j * self.V0_phase)  # Phase correction
-                    estimated_projection = estimated_projection - self.V0 + 1  # Subtract the initial volume to remove the background
-                    
-                    #estimated_projection = self.correctfield(estimated_projection)
-
-                    estimated_projection = torch.concatenate(
-                        (estimated_projection.real, estimated_projection.imag)
-                        , axis=-1)
-                    estimated_projection = estimated_projection.permute(2, 0, 1)
-
-                # If more than 2 channels are present, permute the dimensions
-                elif self.CH > 1:
-                    estimated_projection = estimated_projection.permute(2, 0, 1)
-
-            else:
-                raise ValueError("Imaging model must be a nn.Module.")
-
-            estimated_projections[i] = estimated_projection
-
+        estimated_projections = self.forward(
+            idx=indexes
+            )
+    
         # Normalize the estimated projections
         if self.normalize:
             estimated_projections = self.per_channel_normalization(
@@ -984,16 +1100,7 @@ class Tomography(dl.Application):
         Get translations from the translation parameters.
         """
 
-        if raw_translation is None:
-            raw_translation = self.translation_params
-
-        if self.optimize_translation and raw_translation is not None:
-            max_translation = self.translation_maxmin if self.translation_maxmin is not None else 1.0
-            return max_translation * torch.tanh(raw_translation)
-        elif raw_translation is not None:
-            return raw_translation
-        else:
-            return None
+        return self.get_translations(raw_translation if raw_translation is not None else self.translation_params)
 
     def move_all_to_device(self, device):
         """
@@ -1001,9 +1108,7 @@ class Tomography(dl.Application):
         """
         self.to(device)
         self.rotation_params = self.rotation_params.to(device)
-
-        if self.optimize_translation:
-            self.translation_params = self.translation_params.to(device)
+        self.translation_params = self.translation_params.to(device)
 
         self.volume = self.volume.to(device)
 
@@ -1027,12 +1132,7 @@ class Tomography(dl.Application):
         Toggle the requires_grad attribute of the rotation and translation parameters.
         """
         self.rotation_params.requires_grad = requires_grad
-
-        if self.optimize_translation and self.translation_params is not None:
-            self.translation_params.requires_grad = requires_grad
-
-            if self.translation_maxmin is not None:
-                self.translation_maxmin = 1.0
+        self.translation_params.requires_grad = requires_grad
 
     def toggle_gradients_quaternion(self, requires_grad):
         """
@@ -1044,11 +1144,7 @@ class Tomography(dl.Application):
         """
         Toggle the requires_grad attribute of the translation parameters.
         """
-        if self.optimize_translation and self.translation_params is not None:
-            self.translation_params.requires_grad = requires_grad
-
-            if self.translation_maxmin is not None:
-                self.translation_maxmin = 1.0
+        self.translation_params.requires_grad = requires_grad
 
     def toggle_gradients_volume(self, requires_grad):
         """
@@ -1067,9 +1163,19 @@ class Tomography(dl.Application):
         """
         Called at the end of each training epoch.
         """
-        if self.rotation_optim_case == 'quaternion':
+
+        # Clip volume to be between 0 and 1
+        if self.volume.requires_grad:
+            if self.initial_volume == 'refraction':
+                self.volume.data = torch.clamp(self.volume.data, min=1.0, max=2.0)
+            else:
+                #self.volume.data = torch.clamp(self.volume.data, min=0.0, max=1.0)
+                self.volume.data = torch.clip(self.volume.data, 0., 1., out=self.volume.data)
+
+        if self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
             # Get the predicted quaternions
             predicted = self.get_quaternions(self.rotation_params)
+            predicted = predicted / predicted.norm(dim=-1, keepdim=True)
 
             # get first predicted quaternion P_0 (shape: [4])
             P0 = predicted[0]
@@ -1080,14 +1186,15 @@ class Tomography(dl.Application):
             # apply q_rel to all predictions as before
             Q_aligned = self.quat_multiply(q_rel, predicted)
             Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
-
+            
             # Normalize the rotation parameters to ensure they are valid quaternions
             self.rotation_params.data = Q_aligned
 
-        if self.rotation_optim_case == 'basis':
+        if self.rotation_optim_case == 'basis' and self.rotation_params.requires_grad:
 
             # Get the predicted quaternions
             predicted = self.get_quaternions(self.rotation_params)
+            predicted[:] = predicted / torch.norm(predicted, dim=1, keepdim=True)
 
             # get first predicted quaternion P_0 (shape: [4])
             P0 = predicted[0]

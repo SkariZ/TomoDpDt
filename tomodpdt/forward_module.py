@@ -14,7 +14,8 @@ class ForwardModelSimple(nn.Module):
                  ny: int = 0, 
                  nz: int = 0,
                  N: int = 0,
-                 dim: int = 2):
+                 dim: int = 2,
+                 device: torch.device = None):
         """
         Parameters
         ----------
@@ -27,35 +28,24 @@ class ForwardModelSimple(nn.Module):
         """
         super().__init__()
 
+        if device is not None:
+            self.device = device
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         # Handle default size
-        if nx <= 0 or ny <= 0 or nz <= 0 and N>0:
+        if (nx <= 0 or ny <= 0 or nz <= 0) and N > 0:
             nx = ny = nz = N
 
         self.nx, self.ny, self.nz = nx, ny, nz
         self.dim = dim
 
         # Create voxel coordinates centered around 0
-        x = torch.arange(nx) - nx / 2
-        y = torch.arange(ny) - ny / 2
-        z = torch.arange(nz) - nz / 2
-
-        # Meshgrid in (x,y,z) order, indexing='ij' ensures correct axis alignment
-        zz, yy, xx = torch.meshgrid(z, y, x, indexing='ij')  # shape: (nz, ny, nx)
-
-        # Stack coordinates in (z,y,x) order for consistency with grid_sample
-        grid = torch.stack([xx, yy, zz], dim=-1).float()  # (nz, ny, nx, 3)
-
-        # Normalize to [-1,1] for grid_sample
-        grid[..., 0] = grid[..., 0] / (nx / 2)
-        grid[..., 1] = grid[..., 1] / (ny / 2)
-        grid[..., 2] = grid[..., 2] / (nz / 2)
-
-        self.register_buffer("base_grid", grid.view(-1, 3).clamp(-1, 1))
-
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-        # Move base_grid to the device
-        self.base_grid = self.base_grid.to(self.device)
+        x = torch.linspace(-1, 1, nx)
+        y = torch.linspace(-1, 1, ny)
+        z = torch.linspace(-1, 1, nz)
+        grid = torch.stack(torch.meshgrid(z, y, x, indexing='ij'), dim=-1)  # (nz, ny, nx, 3)
+        self.grid = grid.to(self.device)  # Store the grid for later use
 
     def forward(self, volume: torch.Tensor, quaternions: torch.Tensor) -> torch.Tensor:
         """
@@ -66,53 +56,45 @@ class ForwardModelSimple(nn.Module):
         estimated_projections = torch.zeros(batch_size, out_h, out_w, device=self.device)
 
         for i in range(batch_size):
-            rotated_volume = self.apply_rotation(volume, quaternions[i])
+            rotated_volume = self.apply_rotation_translation(volume, quaternions[i])
             estimated_projections[i] = self.project(rotated_volume)
 
         return estimated_projections
 
-    def apply_rotation(self, volume: torch.Tensor, q: torch.Tensor) -> torch.Tensor:
-        """
-        Rotate the volume using quaternion q.
-        """
+    def apply_rotation_translation(self, volume, q, translations=None):
+
         q = q / q.norm()
         R = self.quaternion_to_rotation_matrix(q)  # (3,3)
+        R = R.to(volume.device)
 
-        rotated_grid = torch.matmul(self.base_grid, R.t()).view(self.nz, self.ny, self.nx, 3)
-        rotated_grid = rotated_grid.clamp(-1, 1)
+        # Prepare volume: add batch and channel dims if needed
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
 
-        vol = volume
-        if vol.dim() == 3:
-            vol = vol.unsqueeze(0).unsqueeze(0)  # (1,1,D,H,W)
+        # Get volume shape
+        _, _, D, H, W = volume.shape
 
-        rotated_volume = F.grid_sample(vol, rotated_grid.unsqueeze(0),
-                                       align_corners=True, padding_mode='zeros')
-        return rotated_volume.squeeze(0).squeeze(0)
+        # Flatten normalized voxel-space grid
+        grid = self.grid.view(-1, 3)  # (N^3, 3)
+        grid = grid.to(volume.device)
 
-    def apply_rotation_translation(self, volume, q, translations=None):
-        """
-        Rotate and optionally translate the volume.
-        translations: tensor of shape (3,) in voxel units (x, y, z).
-        """
-        q = q / q.norm()
-        R = self.quaternion_to_rotation_matrix(q)
-
-        grid = self.base_grid.clone()  # (nx*ny*nz, 3)
-
+        # If translation provided, normalize and subtract
         if translations is not None:
-            tx, ty, tz = translations
-            grid[:, 0] -= tx / (self.nx / 2)
-            grid[:, 1] -= ty / (self.ny / 2)
-            grid[:, 2] -= tz / (self.nz / 2)
+            t_norm = torch.zeros(3, device=grid.device)
+            t_norm[0] = 2 * translations[0] / (D - 1)  # dz normalized
+            t_norm[1] = 2 * translations[1] / (H - 1)  # dy normalized
+            t_norm[2] = 2 * translations[2] / (W - 1)  # dx normalized
 
-        rotated_grid = torch.matmul(grid, R.t()).view(self.nz, self.ny, self.nx, 3)
-        rotated_grid = rotated_grid.clamp(-1, 1)
+            grid -= t_norm.view(1, 3)
+        
+        # Rotate grid by R
+        rotated_grid = torch.matmul(grid, R.t())  # (N^3, 3)
 
-        vol = volume
-        if vol.dim() == 3:
-            vol = vol.unsqueeze(0).unsqueeze(0)
+        # Reshape and clamp
+        rotated_grid = rotated_grid.view(1, D, H, W, 3).clamp(-1, 1)
 
-        rotated_volume = F.grid_sample(vol, rotated_grid.unsqueeze(0), align_corners=True)
+        rotated_volume = F.grid_sample(volume, rotated_grid, align_corners=True)
+
         return rotated_volume.squeeze(0).squeeze(0)
 
     @staticmethod

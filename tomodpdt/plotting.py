@@ -2,6 +2,7 @@ import matplotlib.pyplot as plt
 import matplotlib.gridspec as gridspec
 import numpy as np
 import torch
+import torch.nn.functional as F
 from mpl_toolkits.mplot3d import Axes3D
 from scipy.spatial.transform import Rotation as R
 
@@ -408,8 +409,16 @@ class TomoPlotter:
         if pred is None:
 
             if not forward:
-                m = self.tomo.vae_model.to(self.tomo.frames.device)
-                pred = m(self.tomo.frames)[0].cpu().numpy()
+
+                try: 
+                    m = self.tomo.vae_model.to(self.tomo.frames.device)
+                    pred = m(self.tomo.frames)[0].cpu().numpy()
+                except:
+                    # Pad H and W to be divisible by 8 (VAE-friendly)
+                    new_h = (self.tomo.frames.shape[2] + 7) // 8 * 8
+                    new_w = (self.tomo.frames.shape[3] + 7) // 8 * 8
+                    self.tomo.frames = F.pad(self.tomo.frames, (0, new_w - self.tomo.frames.shape[3], 0, new_h - self.tomo.frames.shape[2]), mode='constant')
+                    pred = m(self.tomo.frames)[0].cpu().numpy()
             else:
                 pred = self.tomo.full_forward_final(max_projections=10).detach().cpu().numpy()
 

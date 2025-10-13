@@ -8,11 +8,13 @@ try:
     import tomodpdt.forward_module as FM
     import tomodpdt.imaging_modality_torch as IMT
     import tomodpdt.volumes as V
+    import tomodpdt.application as A
 except:
     import rotations as R
     import forward_module as FM
     import imaging_modality_torch as IMT
     import volumes as V
+    import application as A
 
 # Set the random seed for reproducibility
 # np.random.seed(123)
@@ -34,7 +36,8 @@ def create_data(
         image_modality='sum_projection', 
         samples=400, 
         duration=2, 
-        rotation_case='sinusoidal'
+        rotation_case='sinusoidal',
+        translations=None,
         ):
     """
     Generate a dataset of 3D objects and their 2D projections.
@@ -61,6 +64,8 @@ def create_data(
         object = torch.tensor(volume_dict[volume_case], dtype=torch.float32, device=DEV)
 
     nx, ny, nz = object.shape  # Use actual dimensions
+    
+    #object = object.swapaxes(0, 2)  # Move depth axis to the end for rotation model (D, H, W) -> (W, H, D)
 
     # Create quaternions
     if isinstance(rotation_case, (np.ndarray, torch.Tensor)):
@@ -70,13 +75,13 @@ def create_data(
             'noisy_sinusoidal': R.generate_noisy_sinusoidal_quaternion,
             'sinusoidal': R.generate_sinusoidal_quaternion,
             'random_sinusoidal': R.generate_random_sinusoidal_quaternion,
-            '1ax': lambda duration, samples: R.generate_random_sinusoidal_quaternion(duration, samples, phi=0, psi=0),
+            '1ax': R.generate_random_sinusoidal_quaternion,
             'smooth_varying': R.generate_smooth_varying_quaternion,
             'smooth_varying_random': R.generate_smooth_varying_quaternion
         }
         if rotation_case not in rotation_fn_dict:
             raise ValueError(f'Unknown rotation case: {rotation_case}')
-        quaternions = rotation_fn_dict[rotation_case](duration=duration, samples=samples)
+        quaternions = rotation_fn_dict[rotation_case](duration=duration, samples=samples) if rotation_case != '1ax' else R.generate_random_sinusoidal_quaternion(duration=duration, samples=samples, phi=0, psi=0)
 
     quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
@@ -89,7 +94,7 @@ def create_data(
         elif image_modality == 'sum_projection_avg_weighted':
             imaging_model = IMT.SumAvgWeighted3d2d(dim=-1)
         elif image_modality in ['brightfield', 'darkfield', 'iscat', 'fluorescence']:
-            optics = IMT.setup_optics((nx, ny, nz), microscopy_regime=image_modality.capitalize())
+            optics = IMT.setup_optics(shape=(nx, ny, nz), microscopy_regime=image_modality.capitalize())
             imaging_model = IMT.imaging_model(optics)
         else:
             raise ValueError(f'Unknown imaging modality: {image_modality}')
@@ -103,21 +108,31 @@ def create_data(
         V0 = V0 * torch.exp(-1j * V0_phase)
 
     # Rotation model
-    rotmod = FM.ForwardModelSimple(nx=nx, ny=ny, nz=nz)  # Pass actual volume dimensions
+    #rotmod = FM.ForwardModelSimple(nx=nx, ny=ny, nz=nz)  # Pass actual volume dimensions
 
+    rotmod = A.Tomography(
+        volume_size=object.shape, # The size of the volume
+        )
+
+    
     # Dataset
     projections = torch.zeros((samples, ch, nx, ny), device=DEV)
-
+    
     # Generate dataset
     for i in range(samples):
         if i % 100 == 0 and i > 0:
             print(f'Simulating... {i/samples * 100:.1f}%')
 
-        volume_rot = rotmod.apply_rotation(volume=object, q=quaternions[i])
+        volume_rot = rotmod.apply_rotation(volume=object, q=quaternions[i], translations=translations[i] if translations is not None else None)
+
+        # Move the depth axis to the front for imaging model
+        #volume_rot = volume_rot.moveaxis(0, 2)  # (D, H, W) -> (H, W, D)
+
         image = imaging_model(volume_rot)
 
         if imaging_model.microscopy_regime in ['sum_projection', 'sum_projection_avg_weighted']:
             projections[i, 0] = image.cpu().squeeze()
+            
         elif imaging_model.microscopy_regime == 'brightfield' and ch == 2:
             image = image * torch.exp(-1j * V0_phase)
             image = image - V0 + 1

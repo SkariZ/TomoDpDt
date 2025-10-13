@@ -9,10 +9,10 @@ class ConvVAE(nn.Module):
             input_shape,
             latent_dim=2,
             conv_channels=[64, 48, 32],
-            dense_dim=256,
+            dense_dim=128,
             activation='lrelu',
             output_activation='sigmoid',
-            dropout=0.0,
+            dropout=0.2,
             ):
         super(ConvVAE, self).__init__()
 
