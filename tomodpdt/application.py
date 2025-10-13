@@ -925,8 +925,7 @@ class Tomography(dl.Application):
         """
         qw, qx, qy, qz = q.unbind()
 
-        eps = 1e-8
-        q = q / (q.norm() + eps)  # Normalize quaternion
+        q = q / (q.norm())  # Normalize quaternion
 
         # Compute the elements of the rotation matrix directly from quaternion components
         R = torch.stack([
@@ -939,9 +938,8 @@ class Tomography(dl.Application):
 
     def quaternion_to_rotation_matrix_batch(self, q):
         """Convert a batch of quaternions (B, 4) to rotation matrices (B, 3, 3)."""
-        eps = 1e-8
 
-        q = q / (q.norm(dim=1, keepdim=True) + eps)  # Normalize quaternions batchwise
+        q = q / (q.norm(dim=1, keepdim=True))  # Normalize quaternions batchwise
         w, x, y, z = q[:, 0], q[:, 1], q[:, 2], q[:, 3]
 
         R = torch.stack([
@@ -1164,53 +1162,55 @@ class Tomography(dl.Application):
         Called at the end of each training epoch.
         """
 
-        # Clip volume to be between 0 and 1
-        if self.volume.requires_grad:
-            if self.initial_volume == 'refraction':
-                self.volume.data = torch.clamp(self.volume.data, min=1.0, max=2.0)
-            else:
-                #self.volume.data = torch.clamp(self.volume.data, min=0.0, max=1.0)
-                self.volume.data = torch.clip(self.volume.data, 0., 1., out=self.volume.data)
+        # For now disable this
+        if False: 
+            # Clip volume to be between 0 and 1
+            if self.volume.requires_grad:
+                if self.initial_volume == 'refraction':
+                    self.volume.data = torch.clamp(self.volume.data, min=1.0, max=2.0)
+                else:
+                    #self.volume.data = torch.clamp(self.volume.data, min=0.0, max=1.0)
+                    self.volume.data = torch.clip(self.volume.data, 0., 1., out=self.volume.data)
 
-        if self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
-            # Get the predicted quaternions
-            predicted = self.get_quaternions(self.rotation_params)
-            predicted = predicted / predicted.norm(dim=-1, keepdim=True)
+            if self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
+                # Get the predicted quaternions
+                predicted = self.get_quaternions(self.rotation_params)
+                predicted = predicted / predicted.norm(dim=-1, keepdim=True)
 
-            # get first predicted quaternion P_0 (shape: [4])
-            P0 = predicted[0]
+                # get first predicted quaternion P_0 (shape: [4])
+                P0 = predicted[0]
 
-            # relative quaternion to align first predicted quat to identity
-            q_rel = self.quat_conjugate(P0.unsqueeze(0))  # shape [1,4]
+                # relative quaternion to align first predicted quat to identity
+                q_rel = self.quat_conjugate(P0.unsqueeze(0))  # shape [1,4]
 
-            # apply q_rel to all predictions as before
-            Q_aligned = self.quat_multiply(q_rel, predicted)
-            Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
-            
-            # Normalize the rotation parameters to ensure they are valid quaternions
-            self.rotation_params.data = Q_aligned
+                # apply q_rel to all predictions as before
+                Q_aligned = self.quat_multiply(q_rel, predicted)
+                Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
+                
+                # Normalize the rotation parameters to ensure they are valid quaternions
+                self.rotation_params.data = Q_aligned
 
-        if self.rotation_optim_case == 'basis' and self.rotation_params.requires_grad:
+            if self.rotation_optim_case == 'basis' and self.rotation_params.requires_grad:
 
-            # Get the predicted quaternions
-            predicted = self.get_quaternions(self.rotation_params)
-            predicted[:] = predicted / torch.norm(predicted, dim=1, keepdim=True)
+                # Get the predicted quaternions
+                predicted = self.get_quaternions(self.rotation_params)
+                predicted[:] = predicted / torch.norm(predicted, dim=1, keepdim=True)
 
-            # get first predicted quaternion P_0 (shape: [4])
-            P0 = predicted[0]
+                # get first predicted quaternion P_0 (shape: [4])
+                P0 = predicted[0]
 
-            # relative quaternion to align first predicted quat to identity
-            q_rel = self.quat_conjugate(P0.unsqueeze(0))
+                # relative quaternion to align first predicted quat to identity
+                q_rel = self.quat_conjugate(P0.unsqueeze(0))
 
-            # apply q_rel to all predictions as before
-            Q_aligned = self.quat_multiply(q_rel, predicted)
-            Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
+                # apply q_rel to all predictions as before
+                Q_aligned = self.quat_multiply(q_rel, predicted)
+                Q_aligned = Q_aligned / Q_aligned.norm(dim=-1, keepdim=True)
 
-            # Generate the basis functions. Solve the least squares problem to find the coefficients
-            coeffs = torch.linalg.lstsq(self.basis, Q_aligned).solution
+                # Generate the basis functions. Solve the least squares problem to find the coefficients
+                coeffs = torch.linalg.lstsq(self.basis, Q_aligned).solution
 
-            # Update the rotation parameters with the new coefficients
-            self.rotation_params.data = coeffs
+                # Update the rotation parameters with the new coefficients
+                self.rotation_params.data = coeffs
 
     def quat_conjugate(self, q):
         # q: (...,4) tensor of unit quaternions (w,x,y,z)
