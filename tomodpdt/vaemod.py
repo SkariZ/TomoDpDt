@@ -12,7 +12,7 @@ class ConvVAE(nn.Module):
             dense_dim=128,
             activation='lrelu',
             output_activation='sigmoid',
-            dropout=0.2,
+            dropout=0.1,
             ):
         super(ConvVAE, self).__init__()
 
