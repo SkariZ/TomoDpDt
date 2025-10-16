@@ -18,8 +18,8 @@ def process_latent_space(
     polyorder=2,
     max_peaks=7,
     min_peaks=2,
-    prominence=0.5,
-    height_factor=0.75,
+    prominence=0.7,
+    height_factor=1.0,
     basis_functions=15,
     intial_axes_case='cv2_flow',
     **kwargs

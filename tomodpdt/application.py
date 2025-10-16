@@ -5,7 +5,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
-from torchmetrics.image import StructuralSimilarityIndexMeasure as SSIM
 
 from typing import Optional, Sequence
 import time
@@ -14,14 +13,12 @@ import time
 try: 
     import tomodpdt.estimate_rotations_from_latent as erfl
     import tomodpdt.vaemod as vm
-    import tomodpdt.plotting as plotting
-    import tomodpdt.simulate as sim
+    import tomodpdt.plotting as tp
+
 except:
     import estimate_rotations_from_latent as erfl
     import vaemod as vm
-    import plotting
-    import simulate as sim
-
+    import plotting as tp
 
 class Tomography(dl.Application):
     def __init__(self,
@@ -36,9 +33,9 @@ class Tomography(dl.Application):
                  loss_weights = None,
                  loss_weights_manual = None,
                  filter_volume: bool = True,
-                 learning_rate_volume: float = 5e-4,
-                 learning_rate_rotation: float = 1e-4,
-                 learning_rate_translation: float = 1e-4,
+                 learning_rate_volume: float = 8e-4,
+                 learning_rate_rotation: float = 5e-4,
+                 learning_rate_translation: float = 1e-2,
                  automatic_optimization: bool = True,
                  **kwargs):
         
@@ -73,15 +70,13 @@ class Tomography(dl.Application):
 
         # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 10.0,
-            'ssim_loss': 0.25,
-            'latent_loss': 0.25,
-            'rtv_loss': 0.01,
-            'qv_loss': 1.0,
-            'q0_loss': 1.0,
-            'rtr_loss': 0.01,
-            'rtr_trans_loss': 0.1,
-            'so_loss': 1.0
+            'proj_loss': 2.0,
+            'latent_loss': 0.05,
+            'rtv_loss': 7.0,
+            'qv_loss': 0.0,
+            'q0_loss': 0.0,
+            'rtr_loss': 5.0,
+            'so_loss': 100.0
             }
         
         # Set the loss weights for automatic optimization (only projection, rtv and rtr losses)
@@ -95,7 +90,7 @@ class Tomography(dl.Application):
         self.lr_t_manual = 1e3
 
         # Raise error if loss weights don´t contain all the necessary keys
-        if not all(k in self.loss_weights for k in ['proj_loss', 'ssim_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'rtr_trans_loss', 'so_loss']):
+        if not all(k in self.loss_weights for k in ['proj_loss', 'latent_loss', 'rtv_loss', 'qv_loss', 'q0_loss', 'rtr_loss', 'so_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
         
         if not all(k in self.loss_weights_manual for k in ['proj_loss', 'rtv_loss', 'rtr_loss']):
@@ -154,6 +149,11 @@ class Tomography(dl.Application):
         # Set automatic optimization flag
         self.automatic_optimization = automatic_optimization
 
+        # Flag to enable/disable on_train_batch_end operations
+        self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
+        self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
+        self.smooth_startup = kwargs.get('smooth_startup', True)
+
     def initialize_parameters(self, projections, **kwargs):
         """
         Initialize model parameters:
@@ -195,28 +195,35 @@ class Tomography(dl.Application):
         # --- 2. VAE setup (pad data to multiple of 8 if needed)
         # -------------------------------------------------------
         if kwargs.get('train_vae', True):
+
             if self.CH > 0 and min([self.nx, self.ny]) >= 24:
                 _, C, H, W = projections.shape
                 self.H_orig, self.W_orig = H, W
 
-                # Compute padding so that H,W are divisible by 8 (for ConvVAE)
-                pad_h = (8 - H % 8) % 8
-                pad_w = (8 - W % 8) % 8
-                pad_top, pad_bottom = pad_h // 2, pad_h - pad_h // 2
-                pad_left, pad_right = pad_w // 2, pad_w - pad_w // 2
-
-                # Create padded tensor (new variable, do not overwrite projections_orig)
-                projections_padded = F.pad(
-                    projections, (pad_left, pad_right, pad_top, pad_bottom),
-                    mode='constant', value=0
-                )
-                self.H_padded, self.W_padded = projections_padded.shape[2], projections_padded.shape[3]
+                # Crop projections to 64*64 if possible, else to 32*32
+                if H >= 64 and W >= 64:
+                    # Crop to 64*64 centered
+                    start_h = (H - 64) // 2
+                    start_w = (W - 64) // 2
+                    projections = projections[:, :, start_h:start_h + 64, start_w:start_w + 64]
+                    H, W = projections.shape[2], projections.shape[3]
+                elif H >= 32 and W >= 32:
+                    # Crop to 32*32 centered
+                    start_h = (H - 32) // 2
+                    start_w = (W - 32) // 2
+                    projections = projections[:, :, start_h:start_h + 32, start_w:start_w + 32]
+                    H, W = projections.shape[2], projections.shape[3]
+                else:
+                    raise ValueError("Projections are too small for VAE training. Minimum size is 32x32.")
+                
+                # The size
+                self.H_vae, self.W_vae = H, W
 
                 # Estimate beta
                 if self.normalize:
                     self.vae_model.beta = 0.025
                 else:
-                    r_loss = torch.mean(torch.abs(projections_padded - torch.mean(projections_padded)))
+                    r_loss = torch.mean(torch.abs(projections - torch.mean(projections)))
                     kl_loss = 0.5 * torch.mean(torch.sum(
                         1 + torch.zeros(C, 2) - torch.zeros(C, 2).exp() - torch.zeros(C, 2).pow(2), dim=1
                     ))
@@ -225,7 +232,7 @@ class Tomography(dl.Application):
 
                 # Build VAE to match padded dimensions
                 vae = vm.ConvVAE(
-                    input_shape=(self.CH, self.H_padded, self.W_padded),
+                    input_shape=(self.CH, self.H_vae, self.W_vae),
                     latent_dim=2,
                     output_activation='sigmoid' if self.normalize else 'linear'
                 )
@@ -238,25 +245,25 @@ class Tomography(dl.Application):
                     self.vae_model.reconstruction_loss = torch.nn.L1Loss()
             else:
                 # No padding needed
-                projections_padded = projections
-                self.H_padded, self.W_padded = projections.shape[2:]
+                self.H_vae, self.W_vae = projections.shape[2:]
+
 
             # -------------------------------------------------------
             # --- 3. Train VAE (only on padded data)
             # -------------------------------------------------------
             if self.vae_model.training:
-                self.train_vae(projections_padded, **kwargs)
+                self.train_vae(projections, **kwargs)
 
             # -------------------------------------------------------
             # --- 4. Latent space & rotation initialization
             # -------------------------------------------------------
-            latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections_padded))
+            latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
             self.latent = latent_space
 
             # Determine rotation initialization from latent space
             self.rotation_initial_dict = erfl.process_latent_space(
                 z=latent_space,
-                frames=projections_padded,  # optical flow / latent smoothness uses padded data
+                frames=projections,  # optical flow / latent smoothness uses padded data
                 **kwargs
             )
 
@@ -534,14 +541,28 @@ class Tomography(dl.Application):
         """
         Training step for the model. Computes the loss and logs it.
         """
+
         # Get indices and corresponding frames
         idx_batch = batch
         frames_batch = self.frames[idx_batch]
 
-        # Safely unpad to original size. Don´t know why this is needed, but sometimes the frames are padded...
+        # Safely unpad to original size.
         if hasattr(self, 'H_orig') and hasattr(self, 'W_orig'):
             if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
                 frames_batch = self.unpad_to_original(frames_batch)
+
+        if self.smooth_startup:
+            # If global_step is below 100 set the rotation_params to not require gradients
+            if self.global_step < 100 and self.rotation_params.requires_grad == True:
+                self.rotation_params.requires_grad = False
+            elif self.global_step >= 100 and self.rotation_params.requires_grad == False:
+                self.rotation_params.requires_grad = True
+
+            # If global_step is below 200 set the translation_params to not require gradients
+            if self.global_step < 200 and self.translation_params.requires_grad == True:
+                self.translation_params.requires_grad = False
+            elif self.global_step >= 200 and self.translation_params.requires_grad == False:
+                self.translation_params.requires_grad = True
 
         # Forward pass: estimate projections
         yhat = self.forward(idx_batch)
@@ -553,31 +574,29 @@ class Tomography(dl.Application):
         if self.automatic_optimization == True:
 
             # Prepare VAE input (pad yhat if necessary)
-            yhat_vae = self.pad_for_vae(yhat, self.H_padded, self.W_padded)
+            yhat_vae = self.pad_for_vae(yhat, self.H_vae, self.W_vae)
         
             # Compute latent space from VAE
             with torch.no_grad():
                 latent_space = self.fc_mu(self.encoder(yhat_vae))
 
             # Compute all losses
-            proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss = self.compute_loss_old(
+            proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss_old(
                 yhat, latent_space, frames_batch, idx_batch, self.loss_weights
             )
 
             # Total loss
-            tot_loss = proj_loss + ssim_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + rtr_trans_loss + so_loss
+            tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
 
             # Log losses
             loss_dict = {
                 "total_loss": tot_loss,
                 "proj_loss": proj_loss,
-                "ssim_loss": ssim_loss,
                 "latent_loss": latent_loss,
                 "rtv_loss": rtv_loss,
                 "rtr_loss": rtr_loss,
                 "qv_loss": qv_loss,
                 "q0_loss": q0_loss,
-                "rtr_trans_loss": rtr_trans_loss,
                 "so_loss": so_loss,
             }
             # Only keep non-zero losses
@@ -661,6 +680,9 @@ class Tomography(dl.Application):
                 self.rotation_params.grad = None
                 self.translation_params.grad = None
 
+                # Increment global step
+                self.increment_global_step()
+
                 return tot_loss
         else:
             raise ValueError("Invalid automatic_optimization value. Must be True or False.")
@@ -710,7 +732,7 @@ class Tomography(dl.Application):
 
     def compute_loss(self, yhat, frames_batch, loss_weights=None):
         """
-        Compute the projection loss, latent loss, SSIM, and all regularization terms.
+        Compute the projection loss, latent loss, and all regularization terms.
         Uses MSE instead of L1 for projections and latent space.
         Rotation/translation trajectory regularization is computed on the full trajectory.
         """
@@ -746,7 +768,7 @@ class Tomography(dl.Application):
 
     def compute_loss_old(self, yhat, latent_space, frames_batch, idx_batch, loss_weights=None):
         """
-        Compute the projection loss, latent loss, SSIM, and all regularization terms.
+        Compute the projection loss, latent loss, and all regularization terms.
         Uses MSE instead of L1 for projections and latent space.
         Rotation/translation trajectory regularization is computed on the full trajectory.
         """
@@ -754,30 +776,24 @@ class Tomography(dl.Application):
         # === Projection loss (MSE) ===
         proj_loss = self.projection_loss(yhat, frames_batch)
 
-        # === SSIM loss ===
-        ssim_metric = SSIM(
-            data_range=1.0 if self.normalize else torch.max(frames_batch) - torch.min(frames_batch)
-        ).to(self._device)
-        ssim_loss = 1 - ssim_metric(yhat, frames_batch)
-
         # === Latent loss (MSE) ===
         latent_loss = F.mse_loss(latent_space, self.latent[idx_batch])
 
         # === TV regularization on volume ===
-        if self.volume.requires_grad:
+        if self.volume.requires_grad and self.loss_weights['rtv_loss'] > 0:
             rtv_loss = self.total_variation_regularization(self.volume)
         else:
             rtv_loss = torch.tensor(0.0, device=self._device)
 
         # === Quaternion validity loss ===
-        if self.rotation_params.requires_grad:
+        if self.rotation_params.requires_grad and self.loss_weights['qv_loss'] > 0:
             quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
             qv_loss = self.quaternion_validity_loss(quaternions_pred)
         else:
             qv_loss = torch.tensor(0.0, device=self._device)
 
         # === q0 constraint loss (only if idx_batch contains 0) ===
-        if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0:
+        if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0 and self.loss_weights['q0_loss'] > 0:
             q0_loss = self.q0_constraint_loss(
                 quaternions_pred[idx_batch == 0]
             )
@@ -785,20 +801,15 @@ class Tomography(dl.Application):
             q0_loss = torch.tensor(0.0, device=self._device)
 
         # === Rotational trajectory regularization (computed on full trajectory, not batch only) ===
-        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion':
+        if self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion' and self.loss_weights['rtr_loss'] > 0:
             quaternions_full = self.get_quaternions(self.rotation_params)   # full trajectory
             rtr_loss = self.rotational_trajectory_regularization(quaternions_full)
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
 
-        # === Translation trajectory regularization (full trajectory) ===
-        if self.translation_params is not None and self.translation_params.requires_grad:
-            translations_full = self.get_translations(self.translation_params)  # full trajectory
-            rtr_trans_loss = self.rotational_trajectory_regularization(translations_full)
-        else:
-            rtr_trans_loss = torch.tensor(0.0, device=self._device)
+
         # === Strictly over loss on volume ===
-        if self.volume.requires_grad:
+        if self.volume.requires_grad and self.loss_weights['so_loss'] > 0:
             so_loss = self.strictly_over_loss(self.volume, value=0)
         else:
             so_loss = torch.tensor(0.0, device=self._device)
@@ -806,16 +817,14 @@ class Tomography(dl.Application):
         # === Scale the losses ===
         if loss_weights is not None and isinstance(loss_weights, dict):
             proj_loss *= self.loss_weights['proj_loss']
-            ssim_loss *= self.loss_weights['ssim_loss']
             latent_loss *= self.loss_weights['latent_loss']
             rtv_loss *= self.loss_weights['rtv_loss']
             qv_loss *= self.loss_weights['qv_loss']
             q0_loss *= self.loss_weights['q0_loss']
             rtr_loss *= self.loss_weights['rtr_loss']
-            rtr_trans_loss *= self.loss_weights['rtr_trans_loss']
             so_loss *= self.loss_weights['so_loss']
 
-        return proj_loss, ssim_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, rtr_trans_loss, so_loss
+        return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
     def strictly_over_loss(self, volume, value=1.33):
         """
@@ -1155,11 +1164,10 @@ class Tomography(dl.Application):
         # Swap the x and y rotation
         self.rotation_params[:, [1, 2]] = self.rotation_params[:, [2, 1]]
 
-
     def on_train_batch_end(self, outputs, batch, batch_idx):
         # Called after optimizer step
 
-        if self.automatic_optimization:
+        if self.automatic_optimization and self.on_train_batch_end_enabled:
             with torch.no_grad():
                 # Clip the volume to valid range
                 if hasattr(self, "volume") and self.volume.requires_grad:
@@ -1171,20 +1179,19 @@ class Tomography(dl.Application):
                         self.rotation_params / self.rotation_params.norm(dim=1, keepdim=True)
                     )
 
-
     def on_train_epoch_end(self):
         """
         Called at the end of each training epoch.
         """
-        if self.automatic_optimization:
+        if self.automatic_optimization and self.on_train_epoch_end_enabled:
             with torch.no_grad():  # prevents autograd tracking
 
                 # --- Optional: clamp volume if needed ---
-                if hasattr(self, "volume") and self.volume.requires_grad:
-                    if self.initial_volume == 'refraction':
-                         self.volume.clamp_(1.0, 2.0)
-                    else:
-                         self.volume.clamp_(0.0, 1.0)
+                #if hasattr(self, "volume") and self.volume.requires_grad:
+                #    if self.initial_volume == 'refraction':
+                #         self.volume.clamp_(1.0, 2.0)
+                #    else:
+                #         self.volume.clamp_(0.0, 1.0)
 
                 # --- Handle quaternion rotations ---
                 if self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
@@ -1216,7 +1223,6 @@ class Tomography(dl.Application):
 
                     # safely overwrite rotation params
                     self.rotation_params.copy_(coeffs)
-
 
     def quat_conjugate(self, q):
         # q: (...,4) tensor of unit quaternions (w,x,y,z)

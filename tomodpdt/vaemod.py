@@ -108,7 +108,7 @@ class ConvVAE(nn.Module):
     def conv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding),
-            nn.BatchNorm2d(out_channels),
+            #nn.BatchNorm2d(out_channels),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout)
             )
@@ -116,7 +116,7 @@ class ConvVAE(nn.Module):
     def upconv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         return nn.Sequential(
             nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding),
-            nn.BatchNorm2d(out_channels),
+            #nn.BatchNorm2d(out_channels),
             self.get_activation(self.activation),
             nn.Dropout(self.dropout)
             )

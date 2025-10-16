@@ -267,8 +267,14 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
 
     tomo.vae_model.to(tomo.frames.device)
 
-    recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
-
+    try:
+        recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
+    except:
+        # Crop to size tomo.H_vae, tomo.W_vae
+        start_h = (frames.shape[2] - tomo.H_vae) // 2
+        start_w = (frames.shape[3] - tomo.W_vae) // 2
+        frames = frames[:, :, start_h:start_h + tomo.H_vae, start_w:start_w + tomo.W_vae]
+        recon_vae_pred = tomo.vae_model(frames)[0].cpu()
 
     recon_vae_gt = frames.cpu()
 
@@ -409,16 +415,16 @@ class TomoPlotter:
         if pred is None:
 
             if not forward:
-
                 try: 
                     m = self.tomo.vae_model.to(self.tomo.frames.device)
                     pred = m(self.tomo.frames)[0].cpu().numpy()
                 except:
-                    # Pad H and W to be divisible by 8 (VAE-friendly)
-                    new_h = (self.tomo.frames.shape[2] + 7) // 8 * 8
-                    new_w = (self.tomo.frames.shape[3] + 7) // 8 * 8
-                    self.tomo.frames = F.pad(self.tomo.frames, (0, new_w - self.tomo.frames.shape[3], 0, new_h - self.tomo.frames.shape[2]), mode='constant')
-                    pred = m(self.tomo.frames)[0].cpu().numpy()
+                    # Crop to size tomo.H_vae, tomo.W_vae
+                    start_h = (self.tomo.frames.shape[2] - self.tomo.H_vae) // 2
+                    start_w = (self.tomo.frames.shape[3] - self.tomo.W_vae) // 2
+                    frames = self.tomo.frames[:, :, start_h:start_h + self.tomo.H_vae, start_w:start_w + self.tomo.W_vae]
+                    pred = m(frames)[0].cpu().numpy()
+                    gt = frames.cpu().numpy()
             else:
                 pred = self.tomo.full_forward_final(max_projections=10).detach().cpu().numpy()
 
