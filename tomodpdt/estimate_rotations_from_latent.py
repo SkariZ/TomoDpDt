@@ -150,6 +150,59 @@ def process_latent_space(
         }
 
 
+def process_cross_correlation(
+    frames, 
+    normalize=True, 
+    width=10,
+    initial_axes=None,
+    initial_axes_case='cv2_flow',
+    basis_functions=15, 
+    **kwargs
+    ):
+
+    if not isinstance(frames, torch.Tensor):
+        frames = torch.tensor(frames)
+
+    # Keep track of device    
+    device = frames.device
+
+    # Unwrap phases
+    frames = unwrap_phase_batch(frames)
+    frames = torch.tensor(frames, dtype=torch.float32)
+
+    # Compute cross-correlation series
+    cc = compute_cc_series(frames, normalize=normalize)
+
+    # Compute angles from peaks
+    angles, peaks = compute_angles_from_peaks(cc, n_frames=frames.shape[0], width=width)
+
+    # Auto-determine initial axis if not given
+    if initial_axes is None:
+        if initial_axes_case == 'cv2_flow':
+            flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
+            initial_axes = classify_rotation_axis(flow_vectors)
+        elif initial_axes_case == 'std':
+            std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
+            std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
+            initial_axes = 'x' if std_x > std_y else 'y'
+
+    # Convert angles to quaternions
+    quaternions = quaternions_from_angles(angles, n_quaternions=len(angles), axis=initial_axes)
+    quaternions = torch.tensor(quaternions, dtype=torch.float32)
+
+    basis = generate_basis_functions(quaternions.shape[0], basis_functions)
+    coeffs = initialize_basis_functions(basis, quaternions)
+
+    # Return processed data as dictionary and torch tensors on the same device
+    return {
+        "quaternions": quaternions.to(device),
+        "coeffs": coeffs.to(device),
+        "basis": basis.to(device),
+        "peaks": torch.tensor(peaks).to(device),
+        "smoothed_distances": torch.tensor(cc).to(device)
+        }
+
+
 def generate_basis_functions(N_points, num_basis, t_start=0.1, t_end=0.9):
     """
     Generate smooth, fixed-frequency sine/cosine basis functions with a constant term.
@@ -283,7 +336,7 @@ def unwrap_phase_batch(E_batch):
     Returns:
     - list of unwrapped phases
     """
-    return [unwrap_phase(np.angle(E)) for E in E_batch]
+    return [unwrap_phase(torch.angle(E).cpu().numpy()) for E in E_batch]
 
 
 def cross_correlation_2d(a, b):
@@ -296,13 +349,13 @@ def cross_correlation_2d(a, b):
     Returns:
     - float: maximum of cross-correlation
     """
-    fft_a = np.fft.fft2(a)
-    fft_b = np.fft.fft2(b)
-    cc = np.fft.ifft2(fft_a * fft_b)
-    return np.abs(cc).max()
+    fft_a = torch.fft.fft2(a)
+    fft_b = torch.fft.fft2(b)
+    cc = torch.fft.ifft2(fft_a * fft_b)
+    return torch.abs(cc).max()
 
 
-def compute_cc_series(PU):
+def compute_cc_series(PU, normalize=False):
     """
     Compute cross-correlation series relative to the first frame.
     
@@ -313,11 +366,18 @@ def compute_cc_series(PU):
     - np.ndarray: cross-correlation values
     """
     n = len(PU)
+    
+    # Normalize phases if required
+    if normalize:
+        PU = [(p - torch.mean(p)) / torch.std(p) for p in PU]
+
+    # Compute cross-correlation with respect to the first frame
     cc = [cross_correlation_2d(PU[0], PU[i]) for i in range(n)]
-    return np.array(cc)
+
+    return torch.tensor(cc)
 
 
-def compute_angles_from_peaks(cc, n_frames):
+def compute_angles_from_peaks(cc, n_frames, width=10):
     """
     Compute angle timeline from cross-correlation peaks.
     
@@ -330,26 +390,26 @@ def compute_angles_from_peaks(cc, n_frames):
     """
 
     # Detect peaks
-    pks = signal.find_peaks(cc, width=10)[0]
-    
-    th = np.array([0.])
+    pks = signal.find_peaks(cc, width=width)[0]
+
+    th = torch.tensor([0.])
     for i, pk in enumerate(pks):
-        th = np.r_[th, np.linspace(
+        th = torch.cat((th, torch.linspace(
             i*np.pi,
             (i+1)*np.pi,
             (pks[i] - pks[i-1]) + 1 if i>0 else pks[i]
-        )[1:]]
-    
-    th = np.r_[th, np.linspace(
+        )[1:]), dim=0)
+
+    th = torch.cat((th, torch.linspace(
         (i+1)*np.pi,
         (i+1)*np.pi + np.pi * ((n_frames - pks[i]) / (pks[i] - pks[i-1])),
         n_frames - pks[i] + 1
-    )[1:]]
+    )[1:]), dim=0)
     
-    return th
+    return th, pks
 
 
-def quaternions_from_angles(th, n_quaternions):
+def quaternions_from_angles(th, n_quaternions, axis='y'):
     """
     Initialize quaternions along a single rotation axis (y-axis in this example).
     
@@ -360,9 +420,17 @@ def quaternions_from_angles(th, n_quaternions):
     Returns:
     - np.ndarray: (N, 4) array of quaternions
     """
-    Q_start = np.zeros((n_quaternions, 4))
-    Q_start[:, 0] = np.cos(-th / 2)  # w
-    Q_start[:, 2] = np.sin(-th / 2)  # y-axis rotation
+    Q_start = torch.zeros((n_quaternions, 4))
+    Q_start[:, 0] = torch.cos(-th / 2)  # w
+
+    sin_th_2 = torch.sin(-th / 2)
+    if axis == 'x':
+        Q_start[:, 1] = sin_th_2  # x
+    elif axis == 'y':
+        Q_start[:, 2] = sin_th_2  # y
+    elif axis == 'z':
+        Q_start[:, 3] = sin_th_2  # z
+
     return Q_start
 
 

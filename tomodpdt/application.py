@@ -71,7 +71,7 @@ class Tomography(dl.Application):
         # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
             'proj_loss': 2.0,
-            'latent_loss': 0.05,
+            'latent_loss': 0.1,
             'rtv_loss': 7.0,
             'qv_loss': 0.0,
             'q0_loss': 0.0,
@@ -153,6 +153,11 @@ class Tomography(dl.Application):
         self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
         self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
         self.smooth_startup = kwargs.get('smooth_startup', True)
+
+        # Flags to keep track of requires_grad status
+        self.volume_flag = True
+        self.rotation_params_flag = True
+        self.translation_params_flag = True
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -553,15 +558,15 @@ class Tomography(dl.Application):
 
         if self.smooth_startup:
             # If global_step is below 100 set the rotation_params to not require gradients
-            if self.global_step < 100 and self.rotation_params.requires_grad == True:
+            if self.global_step < 100 and self.rotation_params.requires_grad == True and self.rotation_params_flag == True:
                 self.rotation_params.requires_grad = False
-            elif self.global_step >= 100 and self.rotation_params.requires_grad == False:
+            elif self.global_step >= 100 and self.rotation_params.requires_grad == False and self.rotation_params_flag == True:
                 self.rotation_params.requires_grad = True
 
             # If global_step is below 200 set the translation_params to not require gradients
-            if self.global_step < 200 and self.translation_params.requires_grad == True:
+            if self.global_step < 200 and self.translation_params.requires_grad == True and self.translation_params_flag == True:
                 self.translation_params.requires_grad = False
-            elif self.global_step >= 200 and self.translation_params.requires_grad == False:
+            elif self.global_step >= 200 and self.translation_params.requires_grad == False and self.translation_params_flag == True:
                 self.translation_params.requires_grad = True
 
         # Forward pass: estimate projections
@@ -806,7 +811,6 @@ class Tomography(dl.Application):
             rtr_loss = self.rotational_trajectory_regularization(quaternions_full)
         else:
             rtr_loss = torch.tensor(0.0, device=self._device)
-
 
         # === Strictly over loss on volume ===
         if self.volume.requires_grad and self.loss_weights['so_loss'] > 0:
@@ -1138,24 +1142,29 @@ class Tomography(dl.Application):
         """
         self.rotation_params.requires_grad = requires_grad
         self.translation_params.requires_grad = requires_grad
+        self.rotation_params_flag = requires_grad
+        self.translation_params_flag = requires_grad
 
     def toggle_gradients_quaternion(self, requires_grad):
         """
         Toggle the requires_grad attribute of the quaternion parameters.
         """
         self.rotation_params.requires_grad = requires_grad
+        self.rotation_params_flag = requires_grad
 
     def toggle_gradients_translation(self, requires_grad):
         """
         Toggle the requires_grad attribute of the translation parameters.
         """
         self.translation_params.requires_grad = requires_grad
+        self.translation_params_flag = requires_grad
 
     def toggle_gradients_volume(self, requires_grad):
         """
         Toggle the requires_grad attribute of the volume parameters.
         """
         self.volume.requires_grad = requires_grad
+        self.volume_flag = requires_grad
 
     def swap_rotation_axis(self):
         """ 
