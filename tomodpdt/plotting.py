@@ -283,8 +283,8 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
 
 
 def plots_optim(tomo, save_folder=None, gt_q=None, gt_v=None, dpi=250, plot_3d=True):
-    
-    predicted_object = tomo.volume.detach().cpu()
+
+    predicted_object = tomo.get_volume().detach().cpu()
     projections_pred = tomo.full_forward_final().detach().cpu().numpy()
     projections_gt = tomo.frames.detach().cpu().numpy()
     quaternions_pred = tomo.get_quaternions_final().detach().cpu().numpy()
@@ -457,7 +457,7 @@ class TomoPlotter:
     def plot_sum_object(self, obj=None, save_name="object"):
 
         if obj is None:
-            obj = self.tomo.volume.detach().cpu().numpy()
+            obj = self.tomo.get_volume().detach().cpu().numpy()
 
         fig, ax = plt.subplots(1, 3, figsize=(10, 3))
         plt.suptitle(f"Summation views of {save_name}")
@@ -618,7 +618,7 @@ class TomoPlotter:
         plt.show()
 
     def plot_optimization(self, gt_q=None, gt_v=None):
-        predicted_object = self.tomo.volume.detach().cpu().numpy()
+        predicted_object = self.tomo.get_volume().detach().cpu().numpy()
         projections_pred = self.tomo.full_forward_final(max_projections=16).detach().cpu().numpy()
         projections_gt = self.tomo.frames.detach().cpu().numpy()
         quaternions_pred = self.tomo.get_quaternions_final().detach().cpu().numpy()

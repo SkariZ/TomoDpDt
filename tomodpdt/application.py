@@ -1,3 +1,4 @@
+from networkx import volume
 import deeplay as dl
 from deeplay.external import Adam
 
@@ -20,6 +21,17 @@ except:
     import vaemod as vm
     import plotting as tp
 
+
+class Sum3d2d(nn.Module):
+    def __init__(self, dim=-1):
+        self.dim = dim
+        self.microscopy_regime = 'sum_projection'
+        super(Sum3d2d, self).__init__()
+
+    def forward(self, x):
+        return x.sum(dim=self.dim, keepdim=True)
+
+
 class Tomography(dl.Application):
     def __init__(self,
                  volume_size: Optional[Sequence[int]] = (96, 96, 96),
@@ -32,7 +44,6 @@ class Tomography(dl.Application):
                  minibatch = 16,
                  loss_weights = None,
                  loss_weights_manual = None,
-                 filter_volume: bool = True,
                  learning_rate_volume: float = 8e-4,
                  learning_rate_rotation: float = 5e-4,
                  learning_rate_translation: float = 1e-2,
@@ -51,7 +62,7 @@ class Tomography(dl.Application):
         self.fc_mu = self.vae_model.fc_mu
         
         # Set the imaging model (either passed as a module or projection function)
-        self.imaging_model = imaging_model if imaging_model is not None else "projection"
+        self.imaging_model = imaging_model if imaging_model is not None else Sum3d2d(dim=-1)
         
         # Determine the device (cuda if available, else cpu)
         self._device = torch.device("cuda" if torch.cuda.is_available() else getattr(vae_model, "device", "cpu"))
@@ -70,13 +81,14 @@ class Tomography(dl.Application):
 
         # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 2.0,
+            'proj_loss': 1.0,
             'latent_loss': 0.1,
             'rtv_loss': 7.0,
             'qv_loss': 0.0,
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
-            'so_loss': 100.0
+            'so_loss': 100.0,
+            'binarization_loss': 1.0 # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only projection, rtv and rtr losses)
@@ -96,9 +108,6 @@ class Tomography(dl.Application):
         if not all(k in self.loss_weights_manual for k in ['proj_loss', 'rtv_loss', 'rtr_loss']):
             raise ValueError("Loss weights must contain all the necessary keys.")
 
-        # Set the filter volume flag
-        self.filter_volume = filter_volume
-
         # Set the learning rates for volume, rotation, and translation
         self.learning_rate_volume = learning_rate_volume
         self.learning_rate_rotation = learning_rate_rotation
@@ -109,13 +118,6 @@ class Tomography(dl.Application):
 
         # Call the superclass constructor
         super().__init__(**kwargs)
-
-        # Set the imaging model function if 'projection' is selected
-        if self.imaging_model == None:
-            def projection_fun(volume):
-                # Simple projection summing along one axis
-                return torch.sum(volume, dim=-1)
-            self.imaging_model = projection_fun
 
         # Store normalized voxel-space grid for single volume
         lin_x = torch.linspace(-1, 1, self.nx, device=self._device)
@@ -137,15 +139,6 @@ class Tomography(dl.Application):
         # Placeholder
         self.normalize = False
 
-        # 3D convolutional model for the volume
-        if self.filter_volume:
-            self.convolution_3d_model = nn.Sequential(
-                nn.Conv3d(1, 16, kernel_size=3, stride=1, padding=1),
-                nn.LeakyReLU(0.2, inplace=True),
-                nn.Conv3d(16, 1, kernel_size=3, stride=1, padding=1),
-                nn.Sigmoid(),
-            )
-
         # Set automatic optimization flag
         self.automatic_optimization = automatic_optimization
 
@@ -158,6 +151,15 @@ class Tomography(dl.Application):
         self.volume_flag = True
         self.rotation_params_flag = True
         self.translation_params_flag = True
+
+        # Set binarization flag for fluorescence regime
+        self.binarize_volume = True if self.imaging_model.microscopy_regime == "fluorescence" else False
+        self.alpha_volume = 1.0  # sigmoid scaling factor (annealed later)
+
+        # Set rtv_loss, so_loss to 0 if fluorescence regime is used
+        if self.binarize_volume:
+            self.loss_weights['rtv_loss'] = 0.0
+            self.loss_weights['so_loss'] = 0.0
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -331,28 +333,37 @@ class Tomography(dl.Application):
     def configure_optimizers(self):
         param_groups = []
 
-        if any(p.requires_grad for p in [self.volume]):
-            param_groups.append({'params': [self.volume], 'lr': self.learning_rate_volume})
+        # --- Volume parameters ---
+        if getattr(self, "binarize_volume", False):
+            volume_param = getattr(self, "volume_logits", None)
+        else:
+            volume_param = getattr(self, "volume", None)
 
-        if any(p.requires_grad for p in [self.rotation_params]):
+        if volume_param is not None and getattr(volume_param, "requires_grad", False):
+            param_groups.append({'params': [volume_param], 'lr': self.learning_rate_volume})
+
+        # --- Rotation parameters ---
+        if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
             param_groups.append({'params': [self.rotation_params], 'lr': self.learning_rate_rotation})
 
-        if any(p.requires_grad for p in [self.translation_params]):
+        # --- Translation parameters ---
+        if hasattr(self, "translation_params") and self.translation_params.requires_grad:
             param_groups.append({'params': [self.translation_params], 'lr': self.learning_rate_translation})
 
-        # Schedular for the optimizer
-        if len(param_groups) == 0:
-            raise ValueError("No parameters to optimize. Check if any parameters have requires_grad=True.")
-        else:
-            optimizer = torch.optim.Adam(param_groups)
+        # --- Sanity check ---
+        if not param_groups:
+            raise ValueError("No parameters to optimize. Check requires_grad flags.")
 
-            scheduler = {
-                'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                    optimizer, mode='min', factor=0.75, patience=10, threshold=3e-3, min_lr=5e-7
-                ),
-                'monitor': 'train_total_loss',
-            }
-            return [optimizer], [scheduler]
+        optimizer = torch.optim.RMSprop(param_groups)
+
+        scheduler = {
+            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode='min', factor=0.75, patience=10, threshold=1e-3, min_lr=1e-6
+            ),
+            'monitor': 'train_total_loss',
+        }
+
+        return [optimizer], [scheduler]
 
     def compute_global_min_max(self, projections):
         """
@@ -444,7 +455,13 @@ class Tomography(dl.Application):
         """
         nx, ny, nz = self.volume_size  # get actual volume dimensions
 
-        if self.initial_volume == 'gaussian':
+        if self.binarize_volume:
+            # learnable logits (unconstrained)
+            self.volume_logits = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device))
+            # for forward compatibility
+            self.volume = torch.sigmoid(self.alpha_volume * self.volume_logits)
+
+        elif self.initial_volume == 'gaussian':
             x = torch.arange(nx) - nx / 2
             y = torch.arange(ny) - ny / 2
             z = torch.arange(nz) - nz / 2
@@ -484,14 +501,10 @@ class Tomography(dl.Application):
         Forward pass of the model. Returns the estimated projections for the 
         given indices by rotating the volume and imaging it.
         """
-   
-        # Preprocess the volume
-        #if self.filter_volume:
-        #    volume = self.convolution_3d_model(volume.unsqueeze(0).unsqueeze(0))  # Add batch and channel dimensions
-        #    volume = volume.squeeze(0).squeeze(0)  # Remove batch and channel dimensions
 
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         translations = self.get_translations(self.translation_params)[idx]
+        volume = self.get_volume()
 
         batch_size = quaternions.shape[0]
         estimated_projections_batch = torch.zeros(batch_size, self.CH, self.nx, self.ny, device=self._device)
@@ -506,8 +519,8 @@ class Tomography(dl.Application):
         for b in b_idx:
             # Apply rotations to a single volume using a batch of quaternions
             rotated_volumes = self.apply_rotation_batch(
-                self.volume, 
-                quaternions[b], 
+                volume=volume, 
+                quaternions=quaternions[b], 
                 translations=translations[b] if translations is not None else None
             )
             
@@ -604,6 +617,13 @@ class Tomography(dl.Application):
                 "q0_loss": q0_loss,
                 "so_loss": so_loss,
             }
+
+            if self.imaging_model.microscopy_regime == 'fluorescence':
+                volume = self.get_volume().detach()
+                binarization_loss = self.compute_binarization_loss(volume)
+                tot_loss += binarization_loss
+                loss_dict["binarization_loss"] = binarization_loss
+
             # Only keep non-zero losses
             loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
 
@@ -636,6 +656,7 @@ class Tomography(dl.Application):
                 "rtv_loss": rtv_loss,
                 "rtr_loss": rtr_loss,
             }
+
             # Only keep non-zero losses
             loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
 
@@ -902,6 +923,15 @@ class Tomography(dl.Application):
         
         return (λ1 * torch.sum(torch.square(qd)) + λ2 * torch.sum(torch.square(qdd))) / q.shape[0]
 
+    def compute_binarization_loss(self, volume, λ_bin=0.1):
+        return λ_bin * torch.mean(volume * (1 - volume))
+
+    def get_volume(self):
+        if self.binarize_volume:
+            return torch.sigmoid(self.alpha_volume * self.volume_logits)
+        else:
+            return self.volume
+
     def get_translations(self, raw_translation):
 
         """
@@ -1113,58 +1143,98 @@ class Tomography(dl.Application):
 
     def move_all_to_device(self, device):
         """
-        Move all parameters to the given device.
-        """
-        self.to(device)
-        self.rotation_params = self.rotation_params.to(device)
-        self.translation_params = self.translation_params.to(device)
+        Safely move all model components (parameters, buffers, and extra tensors)
+        to the specified device.
 
-        self.volume = self.volume.to(device)
-
-        if self.rotation_optim_case == 'basis':
-            self.basis = self.basis.to(device)
-            
-        self.grid = self.grid.to(device)
-        self.grid_batch = self.grid_batch.to(device)
-        self.global_min = self.global_min.to(device)
-        self.global_max = self.global_max.to(device)
-    
-    def toggle_grad(self, requires_grad):
+        Handles both brightfield (continuous) and fluorescence (binarized) modes.
         """
-        Toggle the requires_grad attribute of all parameters.
+        # --- Move all registered parameters & buffers automatically ---
+        super().to(device)
+
+        # --- Fluorescence regime (binarized volume via logits) ---
+        if getattr(self, "imaging_model", None) is not None:
+            if getattr(self.imaging_model, "microscopy_regime", "") == "fluorescence":
+                # The learnable parameter in this case is volume_logits, not volume
+                if hasattr(self, "volume_logits"):
+                    self.volume_logits = self.volume_logits.to(device)
+            else:
+                # Continuous volume parameter (e.g., refractive index or absorption)
+                if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter):
+                    # Already moved by self.to(device), no need to reassign
+                    pass
+                elif hasattr(self, "volume"):
+                    self.volume = self.volume.to(device)
+
+        # --- Rotation & translation parameters ---
+        # Only move manually if they are not Parameters (already handled by .to)
+        if hasattr(self, "rotation_params") and not isinstance(self.rotation_params, torch.nn.Parameter):
+            self.rotation_params = self.rotation_params.to(device)
+        if hasattr(self, "translation_params") and not isinstance(self.translation_params, torch.nn.Parameter):
+            self.translation_params = self.translation_params.to(device)
+
+        # --- Basis functions (not parameters) ---
+        if getattr(self, "rotation_optim_case", None) == "basis":
+            if hasattr(self, "basis"):
+                self.basis = self.basis.to(device)
+
+        # --- Grids & normalization constants ---
+        for attr in ["grid", "grid_batch", "global_min", "global_max"]:
+            if hasattr(self, attr):
+                tensor = getattr(self, attr)
+                if isinstance(tensor, torch.Tensor):
+                    setattr(self, attr, tensor.to(device))
+
+    def toggle_grad(self, requires_grad: bool):
+        """
+        Toggle requires_grad for all model parameters.
         """
         for param in self.parameters():
             param.requires_grad = requires_grad
 
-    def toggle_gradients_rotation_translation(self, requires_grad):
-        """
-        Toggle the requires_grad attribute of the rotation and translation parameters.
-        """
-        self.rotation_params.requires_grad = requires_grad
-        self.translation_params.requires_grad = requires_grad
-        self.rotation_params_flag = requires_grad
-        self.translation_params_flag = requires_grad
 
-    def toggle_gradients_quaternion(self, requires_grad):
+    def toggle_gradients_rotation_translation(self, requires_grad: bool):
         """
-        Toggle the requires_grad attribute of the quaternion parameters.
+        Toggle gradients for both rotation and translation parameters.
         """
-        self.rotation_params.requires_grad = requires_grad
-        self.rotation_params_flag = requires_grad
+        if hasattr(self, "rotation_params"):
+            self.rotation_params.requires_grad = requires_grad
+            self.rotation_params_flag = requires_grad
+        if hasattr(self, "translation_params"):
+            self.translation_params.requires_grad = requires_grad
+            self.translation_params_flag = requires_grad
 
-    def toggle_gradients_translation(self, requires_grad):
-        """
-        Toggle the requires_grad attribute of the translation parameters.
-        """
-        self.translation_params.requires_grad = requires_grad
-        self.translation_params_flag = requires_grad
 
-    def toggle_gradients_volume(self, requires_grad):
+    def toggle_gradients_quaternion(self, requires_grad: bool):
         """
-        Toggle the requires_grad attribute of the volume parameters.
+        Toggle gradients for quaternion (rotation) parameters only.
         """
-        self.volume.requires_grad = requires_grad
-        self.volume_flag = requires_grad
+        if hasattr(self, "rotation_params"):
+            self.rotation_params.requires_grad = requires_grad
+            self.rotation_params_flag = requires_grad
+
+
+    def toggle_gradients_translation(self, requires_grad: bool):
+        """
+        Toggle gradients for translation parameters only.
+        """
+        if hasattr(self, "translation_params"):
+            self.translation_params.requires_grad = requires_grad
+            self.translation_params_flag = requires_grad
+
+
+    def toggle_gradients_volume(self, requires_grad: bool):
+        """
+        Toggle gradients for the volume (or logits, for fluorescence).
+        """
+        # Handle fluorescence case where volume_logits is the true parameter
+        if getattr(self, "imaging_model", None) is not None and \
+        getattr(self.imaging_model, "microscopy_regime", "") == "fluorescence":
+            if hasattr(self, "volume_logits"):
+                self.volume_logits.requires_grad = requires_grad
+                self.volume_flag = requires_grad
+        elif hasattr(self, "volume"):
+            self.volume.requires_grad = requires_grad
+            self.volume_flag = requires_grad
 
     def swap_rotation_axis(self):
         """ 
@@ -1179,7 +1249,7 @@ class Tomography(dl.Application):
         if self.automatic_optimization and self.on_train_batch_end_enabled:
             with torch.no_grad():
                 # Clip the volume to valid range
-                if hasattr(self, "volume") and self.volume.requires_grad:
+                if hasattr(self, "volume") and self.volume.requires_grad and self.imaging_model.microscopy_regime != 'fluorescence':
                     self.volume.clamp_(0.0, 1.0)
 
                 # Normalize rotation parameters (quaternions)

@@ -165,7 +165,6 @@ class imaging_model(nn.Module):
                 zscale=1,
             )
         ):
-            nx, ny, nz = obj.shape
 
             # pad x/y if needed
             if self.padding_xy > 0:
@@ -175,8 +174,6 @@ class imaging_model(nn.Module):
                     mode='constant', value=self.padding_value
                 ).permute(2, 1, 0)
 
-                nx, ny, nz = obj.shape
-
             # brightfield, darkfield, iscat
             if self.microscopy_regime in {'brightfield', 'darkfield', 'iscat'}:
                 image = self.optics.get(obj, self.limits, self.fields, **self.filtered_properties)
@@ -184,10 +181,11 @@ class imaging_model(nn.Module):
             # fluorescence
             elif self.microscopy_regime == 'fluorescence':
                 if obj.sum() == 0:
+                    c1, c2, c3 = obj.shape
                     # center voxel (compute dynamically)
-                    cx = nx // 2
-                    cy = ny // 2
-                    cz = nz // 2
+                    cz = c1 // 2
+                    cy = c2 // 2
+                    cx = c3 // 2
                     obj[cz, cy, cx] = 1e-7
                 image = self.optics.get(obj, self.limits, **self.filtered_properties)
             else:
@@ -198,8 +196,6 @@ class imaging_model(nn.Module):
             image = image[self.padding_xy:-self.padding_xy, self.padding_xy:-self.padding_xy]
 
         return image._value
-
-
 
 class Sum3d2d(nn.Module):
     def __init__(self, dim=-1):
@@ -227,7 +223,7 @@ if __name__ == "__main__":
     import numpy as np
 
 
-    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='brightfield')
+    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='fluorescence')
     im_model = imaging_model(optics_setup)
 
     
