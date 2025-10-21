@@ -197,6 +197,7 @@ class imaging_model(nn.Module):
 
         return image._value
 
+
 class Sum3d2d(nn.Module):
     def __init__(self, dim=-1):
         self.dim = dim
@@ -217,7 +218,82 @@ class SumAvgWeighted3d2d(nn.Module):
         self.weight_along_dim = torch.linspace(1, 0, x.size()[self.dim]).to(x.device)
         w_object = x * self.weight_along_dim
         return w_object.sum(dim=self.dim, keepdim=True)
+
+
+class PropagationImagingModel(nn.Module):
+    """
+    Simple scalar diffraction forward model for tomography-style imaging.
+    No rotation or translation of the object — just direct field propagation.
+    """
+
+    def __init__(self, 
+                 nx, 
+                 ny, 
+                 nz, 
+                 dx=100e-9, 
+                 dy=100e-9, 
+                 dz=100e-9, 
+                 wavelength=532e-9, 
+                 n0=1.33
+                 ):
+        super().__init__()
+
+        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.nx, self.ny, self.nz = nx, ny, nz
+        self.dx, self.dy, self.dz = dx, dy, dz
+        self.wavelength = wavelength
+        self.n0 = n0
+        self.k0 = 2 * torch.pi / wavelength
+        self.device = torch.device(self.device)
+
     
+        # --- Precompute the frequency-domain propagation kernels ---
+        kx, ky = torch.meshgrid(
+            torch.fft.fftfreq(nx, d=dx) * 2 * torch.pi,
+            torch.fft.fftfreq(ny, d=dy) * 2 * torch.pi,
+            indexing='ij'
+        )
+
+        se = (self.k0 * n0)**2 - kx**2 - ky**2
+        kz = torch.sqrt(se * (se > 0))
+        self.register_buffer("kx", kx)
+        self.register_buffer("ky", ky)
+        self.register_buffer("kz", kz)
+
+        # Propagation kernel for one dz step
+        self.register_buffer("K", torch.exp(1j * kz * dz))
+
+        self.microscopy_regime = "scalar_propagation"
+        self.forward_case = "loop"
+
+    def forward(self, volume):
+        """
+        Forward propagation through the refractive index perturbation volume.
+        Input: volume (nz, nx, ny) or (B, nz, nx, ny)
+        Output: complex field (B, nx, ny)
+        """
+        if volume.dim() == 3:
+            volume = volume.unsqueeze(0)
+        B = volume.shape[0]
+
+        E = torch.ones((B, self.nx, self.ny), dtype=torch.complex64, device=self.device)
+
+        # Propagate slice by slice
+        for i in range(self.nz):
+            E = torch.fft.ifft2(torch.fft.fft2(E) * self.K)
+            E = E * torch.exp(1j * volume[:, i] * self.k0 * self.dz)
+
+        # Free-space propagation after the sample (optional)
+        E = torch.fft.ifft2(
+            torch.fft.fft2(E) * torch.exp(1j * self.kz * self.dz * self.nz),
+            dim=(1, 2)
+        )
+
+        phase_term = torch.exp(
+            (-1j * torch.tensor(self.nz * self.dz * self.k0 * self.n0, dtype=torch.float32, device=self.device))
+        )
+        return E * phase_term
+
 
 if __name__ == "__main__":
     import numpy as np

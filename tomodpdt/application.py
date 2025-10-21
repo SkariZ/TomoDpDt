@@ -81,14 +81,14 @@ class Tomography(dl.Application):
 
         # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 1.0,
+            'proj_loss': 2.0,
             'latent_loss': 0.1,
             'rtv_loss': 7.0,
             'qv_loss': 0.0,
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
-            'binarization_loss': 1.0 # Only used if microscopy_regime is fluorescence
+            'binarization_loss': 1.0  # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only projection, rtv and rtr losses)
@@ -113,8 +113,8 @@ class Tomography(dl.Application):
         self.learning_rate_rotation = learning_rate_rotation
         self.learning_rate_translation = learning_rate_translation
 
-        # Set the optimizer (if provided) or default to Adam with learning rate 5e-4
-        self.optimizer = optimizer if optimizer is not None else Adam(lr=self.learning_rate_volume)
+        # This is the optimizer for the variational autoencoder
+        self.optimizer = optimizer if optimizer is not None else Adam(lr=8e-3)
 
         # Call the superclass constructor
         super().__init__(**kwargs)
@@ -160,6 +160,8 @@ class Tomography(dl.Application):
         if self.binarize_volume:
             self.loss_weights['rtv_loss'] = 0.0
             self.loss_weights['so_loss'] = 0.0
+            self.loss_weights['proj_loss'] = 1000.0
+            self.learning_rate_volume = 5e-2
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -354,7 +356,7 @@ class Tomography(dl.Application):
         if not param_groups:
             raise ValueError("No parameters to optimize. Check requires_grad flags.")
 
-        optimizer = torch.optim.RMSprop(param_groups)
+        optimizer = torch.optim.Adam(param_groups)
 
         scheduler = {
             'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
