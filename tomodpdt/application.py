@@ -1,4 +1,3 @@
-from networkx import volume
 import deeplay as dl
 from deeplay.external import Adam
 
@@ -46,7 +45,7 @@ class Tomography(dl.Application):
                  loss_weights_manual = None,
                  learning_rate_volume: float = 8e-4,
                  learning_rate_rotation: float = 5e-4,
-                 learning_rate_translation: float = 1e-2,
+                 learning_rate_translation: float = 1e-3,
                  automatic_optimization: bool = True,
                  **kwargs):
         
@@ -620,6 +619,7 @@ class Tomography(dl.Application):
                 "so_loss": so_loss,
             }
 
+            # Binarization loss for fluorescence regime
             if self.imaging_model.microscopy_regime == 'fluorescence':
                 volume = self.get_volume().detach()
                 binarization_loss = self.compute_binarization_loss(volume)
@@ -629,6 +629,7 @@ class Tomography(dl.Application):
             # Only keep non-zero losses
             loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
 
+            # Log all losses
             for name, value in loss_dict.items():
                 self.log(
                     f"train_{name}",
@@ -785,12 +786,8 @@ class Tomography(dl.Application):
         if loss_weights is not None and isinstance(loss_weights, dict):
             proj_loss *= loss_weights['proj_loss']
             rtv_loss *= loss_weights['rtv_loss']
-            #rtr_loss *= loss_weights['rtr_loss']
-        else:
-            # Default weights
-            proj_loss *= 1.0
-            rtv_loss *= 7.0
-            # rtr_loss *= 5.0
+            rtr_loss *= 1.0
+
 
         return proj_loss, rtv_loss, rtr_loss
 
@@ -805,7 +802,8 @@ class Tomography(dl.Application):
         proj_loss = self.projection_loss(yhat, frames_batch)
 
         # === Latent loss (MSE) ===
-        latent_loss = F.mse_loss(latent_space, self.latent[idx_batch])
+        if self.loss_weights['latent_loss'] > 0:
+            latent_loss = F.mse_loss(latent_space, self.latent[idx_batch])
 
         # === TV regularization on volume ===
         if self.volume.requires_grad and self.loss_weights['rtv_loss'] > 0:
