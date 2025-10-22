@@ -45,10 +45,11 @@ def create_data(
     """
 
     image_modality = image_modality.lower() if isinstance(image_modality, str) else image_modality
+
     if image_modality == 'fluorescence':
         volume_case = 'fluorescence'
 
-    # Create 3D object
+    # Load 3D object
     if volume is not None:
         object = torch.tensor(volume, dtype=torch.float32, device=DEV)
     else:
@@ -65,8 +66,6 @@ def create_data(
 
     nx, ny, nz = object.shape  # Use actual dimensions
     
-    #object = object.swapaxes(0, 2)  # Move depth axis to the end for rotation model (D, H, W) -> (W, H, D)
-
     # Create quaternions
     if isinstance(rotation_case, (np.ndarray, torch.Tensor)):
         quaternions = rotation_case
@@ -96,6 +95,8 @@ def create_data(
         elif image_modality in ['brightfield', 'darkfield', 'iscat', 'fluorescence']:
             optics = IMT.setup_optics(shape=(nx, ny, nz), microscopy_regime=image_modality.capitalize())
             imaging_model = IMT.imaging_model(optics)
+        elif image_modality == 'scalar_propagation':
+            imaging_model = IMT.PropagationImagingModel(nx=nx, ny=ny, nz=nz, wavelength=0.532)
         else:
             raise ValueError(f'Unknown imaging modality: {image_modality}')
 
@@ -108,13 +109,10 @@ def create_data(
         V0 = V0 * torch.exp(-1j * V0_phase)
 
     # Rotation model
-    #rotmod = FM.ForwardModelSimple(nx=nx, ny=ny, nz=nz)  # Pass actual volume dimensions
-
     rotmod = A.Tomography(
         volume_size=object.shape, # The size of the volume
         )
 
-    
     # Dataset
     projections = torch.zeros((samples, ch, nx, ny), device=DEV)
     
@@ -123,11 +121,10 @@ def create_data(
         if i % 100 == 0 and i > 0:
             print(f'Simulating... {i/samples * 100:.1f}%')
 
+        # Rotate volume
         volume_rot = rotmod.apply_rotation(volume=object, q=quaternions[i], translations=translations[i] if translations is not None else None)
 
-        # Move the depth axis to the front for imaging model
-        #volume_rot = volume_rot.moveaxis(0, 2)  # (D, H, W) -> (H, W, D)
-
+        # Forward model
         image = imaging_model(volume_rot)
 
         if imaging_model.microscopy_regime in ['sum_projection', 'sum_projection_avg_weighted']:
@@ -142,7 +139,6 @@ def create_data(
             projections[i, 0] = image.cpu().squeeze().real
 
     return object, quaternions, projections, imaging_model
-
 
 
 if __name__ == '__main__':

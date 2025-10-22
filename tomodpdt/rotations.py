@@ -19,6 +19,7 @@ def generate_sinusoidal_quaternion(omega=2 * np.pi, phi=np.pi / 8,
     Returns:
         np.ndarray: Array of shape (samples, 4), where each row is [q0, q1, q2, q3].
     """
+    
     # Time array
     t = np.linspace(0, duration, samples)
     
@@ -54,6 +55,7 @@ def generate_random_sinusoidal_quaternion(omega=2 * np.pi, phi=np.pi / 8,
     Returns:
         np.ndarray: Array of shape (samples, 4), where each row is [q0, q1, q2, q3].
     """
+
     # Time array
     t = np.linspace(0, duration, samples)
     
@@ -96,6 +98,7 @@ def generate_noisy_sinusoidal_quaternion(omega=2 * np.pi, phi=np.pi / 8,
     Returns:
         np.ndarray: Array of shape (samples, 4), where each row is [q0, q1, q2, q3].
     """
+
     # Generate a clean quaternion
     Q_accum = generate_sinusoidal_quaternion(omega, phi, psi, duration, samples)
     
@@ -127,6 +130,7 @@ def generate_smooth_varying_quaternion(omega1=2 * np.pi, omega2=np.pi / 3,
     Returns:
         np.ndarray: (samples, 4) array of smoothly varying quaternions.
     """
+
     t = np.linspace(0, duration, samples)
 
     # Slowly modulate the rotation axis over time
@@ -170,6 +174,7 @@ def generate_random_varying_quaternion(omega1=2 * np.pi, omega2=np.pi / 3,
     Returns:
         np.ndarray: (samples, 4) array of smoothly varying quaternions.
     """
+
     t = np.linspace(0, duration, samples)
 
     # Generate smooth randomness for phase shifts
@@ -202,8 +207,6 @@ def compute_optical_flow(frames):
     :param frames: NumPy array of shape (T, 64, 64) with values in range [0,1].
     :return: Motion vectors (dx, dy) for sampled points.
     """
-
-    import cv2
 
     T, H, W = frames.shape
     flow_vectors = []
