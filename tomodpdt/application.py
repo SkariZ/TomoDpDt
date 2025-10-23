@@ -32,6 +32,93 @@ class Sum3d2d(nn.Module):
 
 
 class Tomography(dl.Application):
+    """
+    Deep-learning-based 3D tomography reconstruction class.
+
+    This class implements an end-to-end framework for reconstructing 3D volumes 
+    from 2D projection images using a Variational Autoencoder (VAE) and 
+    rotation/translation optimization. It supports both automatic and manual 
+    optimization modes, flexible initialization schemes, and differentiable 
+    geometric transformations.
+
+    The model estimates latent representations of 2D projections, initializes
+    rotation parameters via latent-space processing, and reconstructs the 3D
+    volume by optimizing projection consistency, smoothness, and regularization losses.
+
+    Parameters
+    ----------
+    volume_size : Sequence[int], optional
+        The size of the 3D reconstruction volume (default: (96, 96, 96)).
+    vae_model : torch.nn.Module, optional
+        Variational Autoencoder model used for latent representation of projections.
+        If None, a default `dl.VariationalAutoEncoder` is used.
+    imaging_model : torch.nn.Module, optional
+        Forward imaging model (e.g., projection operator). Defaults to `Sum3d2d`.
+    initial_volume : str, optional
+        Type of initial volume. Options: {'zeros', 'gaussian', 'refraction', 'random', 'given'}.
+    rotation_optim_case : str, optional
+        Rotation parameterization method. Options: {'quaternion', 'basis'}.
+    optimizer : deeplay.external.Adam, optional
+        Optimizer used for training. Defaults to Adam with learning rate 8e-3.
+    volume_init : torch.Tensor, optional
+        Custom tensor for initializing the volume if `initial_volume='given'`.
+    minibatch : int, optional
+        Batch size used during projection estimation (default: 16).
+    loss_weights : dict, optional
+        Dictionary of loss weights for automatic optimization mode.
+    loss_weights_manual : dict, optional
+        Dictionary of loss weights for manual optimization mode.
+    learning_rate_volume : float, optional
+        Learning rate for volume parameters (default: 8e-4).
+    learning_rate_rotation : float, optional
+        Learning rate for rotation parameters (default: 5e-4).
+    learning_rate_translation : float, optional
+        Learning rate for translation parameters (default: 1e-3).
+    automatic_optimization : bool, optional
+        If True, use automatic optimization (via PyTorch Lightning); otherwise manual updates.
+    **kwargs : dict
+        Additional keyword arguments for the parent `deeplay.Application` class.
+
+    Attributes
+    ----------
+    volume : torch.nn.Parameter
+        The reconstructed 3D volume.
+    rotation_params : torch.nn.Parameter
+        Learnable quaternion or basis rotation parameters.
+    translation_params : torch.nn.Parameter
+        Learnable translation parameters.
+    vae_model : torch.nn.Module
+        The VAE used to extract latent representations.
+    imaging_model : torch.nn.Module
+        Imaging model (projection operator).
+    grid, grid_batch : torch.Tensor
+        Normalized voxel-space grids used for transformations.
+
+    Methods
+    -------
+    initialize_parameters(projections, **kwargs)
+        Initializes model parameters (normalization, VAE training, rotations, volume, etc.).
+    configure_optimizers()
+        Sets up optimizers and schedulers for training.
+    forward(idx)
+        Performs forward projection of the reconstructed volume given indices.
+    training_step(batch, batch_idx)
+        Executes a single training step.
+    initialize_volume()
+        Initializes the volume parameter.
+    initialize_translation(N)
+        Initializes translation parameters.
+    ...
+        (See code for additional helper and utility functions.)
+
+    Examples
+    --------
+    >>> tomo = Tomography(volume_size=(64, 64, 64))
+    >>> tomo.initialize_parameters(projections)
+    >>> loss = tomo.training_step(batch_indices, 0)
+    """
+
+
     def __init__(self,
                  volume_size: Optional[Sequence[int]] = (96, 96, 96),
                  vae_model: Optional[torch.nn.Module] = None,
@@ -90,7 +177,7 @@ class Tomography(dl.Application):
             'binarization_loss': 1.0  # Only used if microscopy_regime is fluorescence
             }
         
-        # Set the loss weights for automatic optimization (only projection, rtv and rtr losses)
+        # Set the loss weights for automatic optimization (only "projection", rtv and rtr losses)
         self.loss_weights_manual = loss_weights_manual if loss_weights_manual is not None else {
             'proj_loss': 1.0,
             'rtv_loss': 7.0,
@@ -157,8 +244,8 @@ class Tomography(dl.Application):
 
         # Set rtv_loss, so_loss to 0 if fluorescence regime is used
         if self.binarize_volume:
-            self.loss_weights['rtv_loss'] = 0.0
-            self.loss_weights['so_loss'] = 0.0
+            self.loss_weights['rtv_loss'] = 0.0 # no TV regularization in fluorescence
+            self.loss_weights['so_loss'] = 0.0 # no strictly over loss in fluorescence
             self.loss_weights['proj_loss'] = 1000.0
             self.learning_rate_volume = 5e-2
 

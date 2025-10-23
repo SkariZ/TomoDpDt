@@ -13,42 +13,71 @@ def process_latent_space(
     initial_axes=None,
     quaternions=None,
     initial_frames_per_rotation=None,
-    peaks_period_range=None,
+    peaks_period_range=None,  # [min_period, max_period] in frames
     window_length=11,
     polyorder=2,
     max_peaks=7,
     min_peaks=2,
-    prominence=0.7,
-    height_factor=0.8,
+    prominence=0.1,
+    width=10,
     basis_functions=15,
     intial_axes_case='cv2_flow',
+    rotation_period='2pi',
     **kwargs
 ):
     """
     Process the latent space to compute quaternions and peaks.
 
     Parameters:
-    - z (torch.Tensor): Latent space representation.
-    - frames (torch.Tensor): Frames to compute optical flow.
-    - initial_axes (str): Initial rotation axis ('x', 'y', 'z').
-    - quaternions (torch.Tensor): Precomputed quaternions.
-    - initial_frames_per_rotation (int): Initial estimate of frames per rotation.
-    - peaks_period_range (list): Range for peak detection.
-    - window_length (int): Window length for Savitzky-Golay filter.
-    - polyorder (int): Polynomial order for Savitzky-Golay filter.
-    - max_peaks (int): Maximum number of peaks to detect.
-    - min_peaks (int): Minimum number of peaks to detect.
-    - prominence (float): Prominence for peak detection.
-    - height_factor (float): Height factor for peak detection.
-    - basis_functions (int): Number of basis functions.
-    - intial_axes_case (str): Method to determine initial axes ('cv2_flow' or 'std').
+    ----------
+    z : torch.Tensor
+        Latent space representation.
+    frames : torch.Tensor
+        Input image sequence to compute optical flow.
+    initial_axes : str
+        Initial rotation axis ('x', 'y', 'z'). Auto-estimated if None.
+    quaternions : torch.Tensor
+        Optional precomputed quaternions.
+    initial_frames_per_rotation : int
+        Initial guess of frames per rotation.
+    peaks_period_range : list[int]
+        [min_period, max_period] in frames for filtering detected peaks.
+    window_length : int
+        Window length for Savitzky-Golay smoothing.
+    polyorder : int
+        Polynomial order for smoothing.
+    max_peaks : int
+        Maximum number of peaks to detect.
+    min_peaks : int
+        Minimum number of peaks to detect.
+    prominence : float
+        Minimum prominence for peak detection.
+    width : int
+        Minimum width for peaks.
+    basis_functions : int
+        Number of basis functions for quaternion fitting.
+    intial_axes_case : str
+        Strategy to determine initial rotation axis ('cv2_flow' or 'std').
 
     Returns:
-    - dict: Processed data with quaternions, coefficients, basis functions, peaks, and smoothed distances.
+    -------
+    dict
+        Dictionary with:
+        - 'quaternions'
+        - 'coeffs'
+        - 'basis'
+        - 'peaks'
+        - 'smoothed_distances'
     """
 
-    device = z.device
+    if rotation_period == '2pi':
+        rotation_period = 2 * np.pi
+    elif rotation_period == 'pi':
+        rotation_period = np.pi
+    else:
+        raise ValueError("rotation_period must be either 'pi' or '2pi'.")
 
+    device = z.device
     if not isinstance(frames, torch.Tensor):
         frames = torch.tensor(frames)
 
@@ -62,101 +91,114 @@ def process_latent_space(
             std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
             initial_axes = 'x' if std_x > std_y else 'y'
 
-    # Compute distances and smooth them
+    # Compute smoothed distance signal
     res = np.array(1 - compute_normalized_distances(z).cpu().numpy())
     res = res * np.linspace(0.95, 1, len(res))
     try:
         res = savgol_filter(res, window_length=window_length, polyorder=polyorder)
-    except:
+    except Exception:
         pass
-
     res /= max(res)
 
-    # Adjust peak detection parameters if an initial period estimate is given
+    # If an initial period estimate is given, define an expected range
     if initial_frames_per_rotation is not None:
-        # Set peak search range around the expected period ±30%
         low = int(initial_frames_per_rotation * 0.7)
         high = int(initial_frames_per_rotation * 1.3)
         peaks_period_range = [low, high]
 
-        # Ensure the range is within reasonable limits
         expected_peaks = len(z) / initial_frames_per_rotation
         min_peaks = max(2, int(expected_peaks * 0.6))
         max_peaks = max(min_peaks + 1, int(expected_peaks * 1.4))
-    else:
-        # Default peak search range
-        if peaks_period_range is None:
-            peaks_period_range = [20, 100]
+    elif peaks_period_range is None:
+        # Default broad range if nothing provided
+        peaks_period_range = [10, len(z) // 2]
 
     # Detect peaks
-    peaks = find_peaks(
-        res, 
-        peaks_period_range=peaks_period_range, 
-        max_peaks=max_peaks, 
-        min_peaks=min_peaks, 
-        prominence=prominence,
-        height_factor=height_factor
-        )
+    raw_peaks, props = signal.find_peaks(
+        res, prominence=prominence, width=width
+    )
 
-    # Interpolate angles based on peaks
+    # Filter peaks based on period range (distance between consecutive peaks)
+    if len(raw_peaks) > 1:
+        diffs = np.diff(raw_peaks)
+        valid_mask = (diffs >= peaks_period_range[0]) & (diffs <= peaks_period_range[1])
+        # Always keep the first peak, then add valid ones
+        peaks = [raw_peaks[0]]
+        for i, keep in enumerate(valid_mask):
+            if keep:
+                peaks.append(raw_peaks[i + 1])
+        peaks = np.array(peaks)
+    else:
+        peaks = raw_peaks
+
+    # Clip to min/max allowed peaks
+    if len(peaks) > max_peaks:
+        peaks = peaks[:max_peaks]
+    if len(peaks) < min_peaks:
+        raise ValueError(f"Not enough valid peaks found ({len(peaks)})")
+
+    # Interpolate angles between peaks
     total_timesteps = max(peaks) + 1
     angles = torch.zeros(total_timesteps)
-
     for i, t in enumerate(peaks):
-        angles[t] = i * 2 * torch.pi
-
+        angles[t] = i * rotation_period
     for i in range(1, len(peaks)):
         start, end = peaks[i - 1], peaks[i]
         if end > start:
             angles[start:end] = torch.linspace(angles[start], angles[end], end - start)
 
-    # Initialize angle rotations
+    # Initialize rotation axis
     angle_rotations = torch.zeros(max(peaks), 4)
     angle_rotations[:, 0] = angles[:-1]
 
     if initial_axes == 'x':
-        angle_rotations[:, 1] = 1  # [angle, 1, 0, 0]
+        angle_rotations[:, 1] = 1
     elif initial_axes == 'y':
-        angle_rotations[:, 2] = 1  # [angle, 0, 1, 0]
+        angle_rotations[:, 2] = 1
     elif initial_axes == 'z':
-        angle_rotations[:, 3] = 1  # [angle, 0, 0, 1]
+        angle_rotations[:, 3] = 1
 
-    # Convert axis-angle to quaternions
+    # Convert to quaternions
     axes = angle_rotations[:, 1:]
     norms = torch.norm(axes, dim=1, keepdim=True)
     axes = axes / norms
-
     half_angles = angle_rotations[:, 0] / 2
     qw = torch.cos(half_angles)
     sin_half_angles = torch.sin(half_angles)
     q_xyz = axes * sin_half_angles.unsqueeze(1)
-    
     if quaternions is None:
         quaternions = torch.cat((qw.unsqueeze(1), q_xyz), dim=1)
     else:
         peaks = torch.tensor([0, len(quaternions) - 1])
 
-    # Generate basis functions and initialize coefficients
+    # Ensure quaternion continuity
+    quaternions = ensure_quaternion_continuity(quaternions)
+
+    # Enforce initial axis direction
+    quaternions = enforce_initial_axis_direction(quaternions, axis=initial_axes)
+
+    # Generate basis functions and coefficients
     basis = generate_basis_functions(quaternions.shape[0], basis_functions)
     coeffs = initialize_basis_functions(basis, quaternions)
 
-    # Return processed data as dictionary and torch tensors on the same device
     return {
         "quaternions": quaternions.to(device),
         "coeffs": coeffs.to(device),
         "basis": basis.to(device),
         "peaks": torch.tensor(peaks).to(device),
-        "smoothed_distances": torch.tensor(res).to(device)
-        }
+        "smoothed_distances": torch.tensor(res).to(device),
+    }
 
 
 def process_cross_correlation(
     frames, 
     normalize=True, 
     width=10,
+    prominence=0.1,
+    rotation_period="2pi",
     initial_axes=None,
     initial_axes_case='cv2_flow',
-    basis_functions=15, 
+    basis_functions=15,
     **kwargs
     ):
 
@@ -173,8 +215,19 @@ def process_cross_correlation(
     # Compute cross-correlation series
     cc = compute_cc_series(frames, normalize=normalize)
 
+    # Smooth cross-correlation series
+    try:
+        print("Smoothing cross-correlation series...")
+        cc = savgol_filter(cc.cpu().numpy(), window_length=11, polyorder=2)
+    except:
+        print("Smoothing failed, using raw cross-correlation series...")
+        cc = cc.cpu().numpy()
+    cc = torch.tensor(cc, dtype=torch.float32)
+    cc = cc / max(cc)
+
+
     # Compute angles from peaks
-    angles, peaks = compute_angles_from_peaks(cc, n_frames=frames.shape[0], width=width)
+    angles, peaks = compute_angles_from_peaks(cc, n_frames=frames.shape[0], width=width, prominence=prominence, rotation_period=rotation_period)
 
     # Auto-determine initial axis if not given
     if initial_axes is None:
@@ -190,6 +243,12 @@ def process_cross_correlation(
     quaternions = quaternions_from_angles(angles, n_quaternions=len(angles), axis=initial_axes)
     quaternions = torch.tensor(quaternions, dtype=torch.float32)
 
+    # Ensure quaternion continuity
+    quaternions = ensure_quaternion_continuity(quaternions)
+
+    # Enforce initial axis direction
+    quaternions = enforce_initial_axis_direction(quaternions, axis=initial_axes)
+
     basis = generate_basis_functions(quaternions.shape[0], basis_functions)
     coeffs = initialize_basis_functions(basis, quaternions)
 
@@ -201,6 +260,35 @@ def process_cross_correlation(
         "peaks": torch.tensor(peaks).to(device),
         "smoothed_distances": torch.tensor(cc).to(device)
         }
+
+def ensure_quaternion_continuity(quaternions):
+    """Flip quaternion signs to enforce temporal continuity."""
+    quats = quaternions.clone()
+    for i in range(1, quats.shape[0]):
+        if torch.dot(quats[i - 1], quats[i]) < 0:
+            quats[i] = -quats[i]
+    return quats
+
+def enforce_initial_axis_direction(quaternions, axis='x'):
+    """
+    Ensures the first quaternion's rotation axis starts in the positive direction.
+
+    Parameters
+    ----------
+    quaternions : torch.Tensor
+        Quaternion sequence (N, 4)
+    axis : str
+        Axis to enforce positivity ('x', 'y', or 'z')
+
+    Returns
+    -------
+    torch.Tensor
+        Possibly flipped quaternion sequence.
+    """
+    axis_idx = {'x': 1, 'y': 2, 'z': 3}[axis]
+    if quaternions[0, axis_idx] < 0:
+        quaternions = -quaternions
+    return quaternions
 
 
 def generate_basis_functions(N_points, num_basis, t_start=0.1, t_end=0.9):
@@ -249,15 +337,14 @@ def compute_normalized_distances(z):
 
 
 def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
-               min_peaks=2, prominence=0.5, height_factor=0.775):
+               min_peaks=2, width=10, prominence=0.25):
     """Find peaks in smoothed distance data."""
-    height = height_factor * np.max(res)
+
     distance_range = (peaks_period_range[0], peaks_period_range[1], 10)
 
     for dist in range(*distance_range):
         try:
-            peaks = signal.find_peaks(res, distance=dist, height=height,
-                                      prominence=prominence)[0]
+            peaks = signal.find_peaks(res, distance=dist, prominence=prominence, width=width)[0]
         except:
             peaks = []
             
@@ -377,36 +464,72 @@ def compute_cc_series(PU, normalize=False):
     return torch.tensor(cc)
 
 
-def compute_angles_from_peaks(cc, n_frames, width=10):
+def compute_angles_from_peaks(
+    cc,
+    n_frames,
+    width=10,
+    prominence=0.5,
+    rotation_period="2pi",
+    ):
     """
-    Compute angle timeline from cross-correlation peaks.
-    
-    Parameters:
-    - cc: cross-correlation series
-    - n_frames: total number of frames
-    
-    Returns:
-    - np.ndarray: interpolated angles
+    Compute rotation angles from cross-correlation peaks.
+
+    Parameters
+    ----------
+    cc : array-like
+        Cross-correlation signal over time.
+    n_frames : int
+        Total number of frames.
+    width : int, optional
+        Minimum width of peaks for scipy.signal.find_peaks.
+    prominence : float, optional
+        Peak prominence threshold for robust detection.
+    rotation_period : str, optional
+        Defines how much rotation each detected cycle represents:
+        - 'pi'  : Each peak → π radians (180°)
+        - '2pi' : Each peak → 2π radians (360°) [default]
+
+    Returns
+    -------
+    angles : torch.Tensor
+        Interpolated rotation angles over time.
+    peaks : np.ndarray
+        Detected peak indices.
     """
 
-    # Detect peaks
-    pks = signal.find_peaks(cc, width=width)[0]
+    cc = np.asarray(cc)
+    peaks, props = signal.find_peaks(cc, width=width, prominence=prominence)
 
-    th = torch.tensor([0.])
-    for i, pk in enumerate(pks):
-        th = torch.cat((th, torch.linspace(
-            i*np.pi,
-            (i+1)*np.pi,
-            (pks[i] - pks[i-1]) + 1 if i>0 else pks[i]
-        )[1:]), dim=0)
+    if len(peaks) < 2:
+        raise ValueError("Not enough peaks detected for angle estimation.")
 
-    th = torch.cat((th, torch.linspace(
-        (i+1)*np.pi,
-        (i+1)*np.pi + np.pi * ((n_frames - pks[i]) / (pks[i] - pks[i-1])),
-        n_frames - pks[i] + 1
-    )[1:]), dim=0)
-    
-    return th, pks
+    # Choose angular increment based on model
+    if rotation_period.lower() == "pi":
+        delta_angle = np.pi
+    elif rotation_period.lower() == "2pi":
+        delta_angle = 2 * np.pi
+    else:
+        raise ValueError("rotation_period must be either 'pi' or '2pi'.")
+
+    angles = torch.zeros(n_frames)
+
+    # Assign continuous angles between peaks
+    for i, pk in enumerate(peaks):
+        if i == 0:
+            start, end = 0, pk
+            angles[start:end] = torch.linspace(0, delta_angle, end - start)
+        else:
+            start, end = peaks[i - 1], pk
+            angles[start:end] = torch.linspace(delta_angle * (i - 1), delta_angle * i, end - start)
+
+    # Extend beyond last peak if needed
+    last_pk = peaks[-1]
+    remaining = n_frames - last_pk
+    if remaining > 0:
+        angles[last_pk:] = torch.linspace(delta_angle * (len(peaks) - 1), delta_angle * len(peaks), remaining)
+
+    return angles, peaks
+
 
 
 def quaternions_from_angles(th, n_quaternions, axis='y'):
