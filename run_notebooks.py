@@ -9,7 +9,7 @@ import time
 NOTEBOOK_DIR = Path("Notebooks")  # Folder containing your notebooks
 KERNEL_NAME = "python3"           # Usually "python3" or the name shown in Jupyter
 STOP_ON_ERROR = False             # Set True to stop at the first failure
-LOG_FILE = "rerun_notebooks.log"  # Log file to store run info
+LOG_FILE = "Logs/rerun_notebooks.log"  # Log file to store run info
 KEYWORDS_TO_IGNORE = []          # List of keywords to ignore during execution
 # ======================
 

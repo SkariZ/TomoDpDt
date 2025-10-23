@@ -13,9 +13,10 @@ __pycache__/
 # Ignore .npz files
 *.npz
 
-# Lightninig logs
+# Lightning logs
 logs/
 lightning_logs/
+Logs/
 
 #All files in results folder
 results/

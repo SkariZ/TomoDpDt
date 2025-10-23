@@ -114,8 +114,13 @@ def process_latent_space(
         peaks_period_range = [10, len(z) // 2]
 
     # Detect peaks
-    raw_peaks, = find_peaks(
-        res, prominence=prominence, width=width
+    raw_peaks = find_peaks(
+        res,
+        peaks_period_range=peaks_period_range,
+        max_peaks=max_peaks,
+        min_peaks=min_peaks, 
+        prominence=prominence, 
+        width=width
     )
 
     # Filter peaks based on period range (distance between consecutive peaks)
