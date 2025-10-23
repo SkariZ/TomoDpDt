@@ -18,10 +18,10 @@ def process_latent_space(
     polyorder=2,
     max_peaks=7,
     min_peaks=2,
-    prominence=0.1,
+    prominence=0.2,
     width=10,
     basis_functions=15,
-    intial_axes_case='cv2_flow',
+    initial_axes_case='cv2_flow',
     rotation_period='2pi',
     **kwargs
 ):
@@ -83,10 +83,10 @@ def process_latent_space(
 
     # Auto-determine initial axis if not given
     if initial_axes is None:
-        if intial_axes_case == 'cv2_flow':
+        if initial_axes_case == 'cv2_flow':
             flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
             initial_axes = classify_rotation_axis(flow_vectors)
-        elif intial_axes_case == 'std':
+        elif initial_axes_case == 'std':
             std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
             std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
             initial_axes = 'x' if std_x > std_y else 'y'
@@ -111,7 +111,7 @@ def process_latent_space(
         max_peaks = max(min_peaks + 1, int(expected_peaks * 1.4))
     elif peaks_period_range is None:
         # Default broad range if nothing provided
-        peaks_period_range = [10, len(z) // 2]
+        peaks_period_range = [len(z) // 8, len(z) // 2]
 
     # Detect peaks
     raw_peaks = find_peaks(
@@ -139,8 +139,9 @@ def process_latent_space(
     # Clip to min/max allowed peaks
     if len(peaks) > max_peaks:
         peaks = peaks[:max_peaks]
+
     if len(peaks) < min_peaks:
-        raise ValueError(f"Not enough valid peaks found ({len(peaks)})")
+        raise ValueError("Not enough peaks detected for angle estimation.")
 
     # Interpolate angles between peaks
     total_timesteps = max(peaks) + 1
@@ -197,7 +198,7 @@ def process_latent_space(
 
 def process_cross_correlation(
     frames, 
-    normalize=True, 
+    normalize=False, 
     width=10,
     prominence=0.1,
     rotation_period="2pi",
@@ -209,6 +210,8 @@ def process_cross_correlation(
 
     if not isinstance(frames, torch.Tensor):
         frames = torch.tensor(frames)
+
+    frames_original = frames.clone()
 
     # Keep track of device    
     device = frames.device
@@ -222,14 +225,12 @@ def process_cross_correlation(
 
     # Smooth cross-correlation series
     try:
-        print("Smoothing cross-correlation series...")
         cc = savgol_filter(cc.cpu().numpy(), window_length=11, polyorder=2)
     except:
-        print("Smoothing failed, using raw cross-correlation series...")
         cc = cc.cpu().numpy()
+
     cc = torch.tensor(cc, dtype=torch.float32)
     cc = cc / max(cc)
-
 
     # Compute angles from peaks
     angles, peaks = compute_angles_from_peaks(cc, n_frames=frames.shape[0], width=width, prominence=prominence, rotation_period=rotation_period)
@@ -237,11 +238,11 @@ def process_cross_correlation(
     # Auto-determine initial axis if not given
     if initial_axes is None:
         if initial_axes_case == 'cv2_flow':
-            flow_vectors = compute_optical_flow(frames[:, 0].cpu().numpy())
+            flow_vectors = compute_optical_flow(frames_original[:, 0].cpu().numpy())
             initial_axes = classify_rotation_axis(flow_vectors)
         elif initial_axes_case == 'std':
-            std_x = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 2)).sum()
-            std_y = torch.std(frames[1:] - frames[-1:], dim=(0, 1, 3)).sum()
+            std_x = torch.std(frames_original[1:] - frames_original[-1:], dim=(0, 1, 2)).sum()
+            std_y = torch.std(frames_original[1:] - frames_original[-1:], dim=(0, 1, 3)).sum()
             initial_axes = 'x' if std_x > std_y else 'y'
 
     # Convert angles to quaternions
@@ -266,6 +267,7 @@ def process_cross_correlation(
         "smoothed_distances": torch.tensor(cc).to(device)
         }
 
+
 def ensure_quaternion_continuity(quaternions):
     """Flip quaternion signs to enforce temporal continuity."""
     quats = quaternions.clone()
@@ -273,6 +275,7 @@ def ensure_quaternion_continuity(quaternions):
         if torch.dot(quats[i - 1], quats[i]) < 0:
             quats[i] = -quats[i]
     return quats
+
 
 def enforce_initial_axis_direction(quaternions, axis='x'):
     """
@@ -361,11 +364,20 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
     if len(peaks) < min_peaks:
         peaks = np.append(peaks, len(res)-1)  # Add last peak if necessary
 
-    # If there is a higher height after the last peak, add it
-    if len(peaks) > 1 and res[-1] > res[peaks[-1]]:
+    # If there is a high height after the last peak, add it
+    if len(peaks) > 1 and res[-1] >= res[peaks[-1]]*0.9 and (len(res)-1 - peaks[-1]) >= int(peaks_period_range[0]*0.5):
         peaks = np.append(peaks, len(res)-1)
 
-    return peaks
+    # Check if there are any outlier peaks that have a very low value compared to the others
+
+    peak_values = res[peaks]
+    mean_peak_value = np.mean(peak_values)
+    filtered_peaks = [peaks[0]]  # Always keep the first peak
+    for pk in peaks[1:]:
+        if res[pk] >= 0.6 * mean_peak_value:
+            filtered_peaks.append(pk)    
+
+    return filtered_peaks
 
 
 def compute_optical_flow(frames):
@@ -428,6 +440,14 @@ def unwrap_phase_batch(E_batch):
     Returns:
     - list of unwrapped phases
     """
+
+    # If input is a torch tensor with real values, and 2 channels (real, imag), convert to complex
+    if isinstance(E_batch, torch.Tensor) and E_batch.dim() == 4 and E_batch.size(1) == 2:
+        E_batch = E_batch[:, 0] + 1j * E_batch[:, 1]
+
+    # Make sure E_batch is complex
+    E_batch = E_batch.type(torch.complex64)
+
     return [unwrap_phase(torch.angle(E).cpu().numpy()) for E in E_batch]
 
 
@@ -473,7 +493,7 @@ def compute_angles_from_peaks(
     cc,
     n_frames,
     width=10,
-    prominence=0.5,
+    prominence=0.25,
     rotation_period="2pi",
     ):
     """
@@ -503,7 +523,14 @@ def compute_angles_from_peaks(
     """
 
     cc = np.asarray(cc)
-    peaks, props = signal.find_peaks(cc, width=width, prominence=prominence)
+    peaks, props = adaptive_find_peaks(
+        cc,
+        width=width,
+        prominence=prominence,
+        min_peaks=2,
+        max_peaks=10,
+        max_tries=50,
+    )
 
     if len(peaks) < 2:
         raise ValueError("Not enough peaks detected for angle estimation.")
@@ -535,6 +562,61 @@ def compute_angles_from_peaks(
 
     return angles, peaks
 
+
+def adaptive_find_peaks(
+    cc,
+    width=10,
+    prominence=0.1,
+    min_peaks=2,
+    max_peaks=10,
+    max_tries=10,
+    prominence_decay=0.5,
+    width_decay=0.8,
+):
+    """
+    Robustly find peaks by relaxing parameters until peaks are found.
+
+    Parameters
+    ----------
+    cc : np.ndarray
+        1D cross-correlation signal.
+    width : float
+        Initial width for scipy.signal.find_peaks.
+    prominence : float
+        Initial prominence for peak detection.
+    min_peaks, max_peaks : int
+        Desired range of valid peak counts.
+    max_tries : int
+        How many relaxation steps to attempt.
+    prominence_decay : float
+        Multiplicative factor to reduce prominence each iteration.
+    width_decay : float
+        Multiplicative factor to reduce width each iteration.
+
+    Returns
+    -------
+    peaks : np.ndarray
+        Indices of detected peaks.
+    props : dict
+        Peak properties from scipy.signal.find_peaks.
+    """
+
+    peaks, props = np.array([]), {}
+    p, w = prominence, width
+
+    for i in range(max_tries):
+        peaks, props = signal.find_peaks(cc, prominence=p, width=w)
+        if min_peaks <= len(peaks) <= max_peaks:
+            print(f"✅ Found {len(peaks)} peaks after {i+1} tries (prom={p:.4f}, width={w:.2f})")
+            break
+        # Gradually relax criteria
+        p *= prominence_decay
+        w *= width_decay
+
+    if len(peaks) < min_peaks:
+        print(f" Could not find enough peaks (found {len(peaks)} after {max_tries} tries).")
+
+    return peaks, props
 
 
 def quaternions_from_angles(th, n_quaternions, axis='y'):

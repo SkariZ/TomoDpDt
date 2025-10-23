@@ -356,11 +356,20 @@ class Tomography(dl.Application):
             self.latent = latent_space
 
             # Determine rotation initialization from latent space
-            self.rotation_initial_dict = erfl.process_latent_space(
-                z=latent_space,
-                frames=projections,  # optical flow / latent smoothness uses padded data
-                **kwargs
-            )
+            try:
+                self.rotation_initial_dict = erfl.process_latent_space(
+                    z=latent_space,
+                    frames=projections,  # optical flow / latent smoothness uses padded data
+                    **kwargs
+                )
+                print("Rotation initialization from latent space successful.")
+            except:
+                self.rotation_initial_dict = erfl.process_cross_correlation(
+                    frames=projections,
+                    **kwargs
+                )
+                print("Rotation initialization from latent space failed, using cross-correlation instead.")
+
 
             # -------------------------------------------------------
             # --- 5. Set rotation parameters
