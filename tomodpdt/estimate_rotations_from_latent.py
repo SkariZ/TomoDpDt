@@ -114,7 +114,7 @@ def process_latent_space(
         peaks_period_range = [10, len(z) // 2]
 
     # Detect peaks
-    raw_peaks, props = signal.find_peaks(
+    raw_peaks, = find_peaks(
         res, prominence=prominence, width=width
     )
 

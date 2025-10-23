@@ -148,12 +148,59 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     ax[2].imshow(object.sum(2))
 
     # Add a colorbar
-    fig.colorbar(im, ax=ax)
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
 
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     
     plt.show()
+
+def plot_slice_object(object, save_name="object", save_folder=None, dpi=100):
+    """
+    Plots the central slices of a 3D object along the x, y, and z axes.
+
+    Parameters:
+    ----------
+    object : numpy.ndarray or torch.Tensor
+        3D array representing the object volume.
+    save_name : str, optional
+        Name of the saved plot. Defaults to "object".
+    save_folder : str, optional
+        Directory path to save the figure. Defaults to None.
+    dpi : int, optional
+        Resolution of the saved figure. Defaults to 100.
+    """
+
+    if isinstance(object, torch.Tensor):
+        object = object.detach().cpu().numpy()
+
+    if object.ndim != 3:
+        raise ValueError("Input 'object' must be a 3D array.")
+
+    mid = [s // 2 for s in object.shape]
+
+    fig, ax = plt.subplots(1, 3, figsize=(10, 3))
+    plt.suptitle(f"Central slices of {save_name}")
+
+    # Plot central slices
+    ax[0].set_title("XY Slice (Z-mid)")
+    im = ax[0].imshow(object[mid[0], :, :], cmap='viridis')
+    ax[1].set_title("XZ Slice (Y-mid)")
+    ax[1].imshow(object[:, mid[1], :], cmap='viridis')
+    ax[2].set_title("YZ Slice (X-mid)")
+    ax[2].imshow(object[:, :, mid[2]], cmap='viridis')
+
+    # Add a colorbar
+    fig.colorbar(im, ax=ax, fraction=0.025, pad=0.04)
+
+    # Optional saving
+    if save_folder is not None:
+        path = f"{save_folder}/{save_name}_slices.png"
+        plt.savefig(path, dpi=dpi, bbox_inches="tight", pad_inches=0)
+        print(f"Saved: {path}")
+
+    plt.show()
+
 
 
 def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=100):
