@@ -343,37 +343,51 @@ class Tomography(dl.Application):
                 self.H_vae, self.W_vae = projections.shape[2:]
 
 
-            # -------------------------------------------------------
-            # --- 3. Train VAE (only on padded data)
-            # -------------------------------------------------------
-            if self.vae_model.training:
-                self.train_vae(projections, **kwargs)
+        # -------------------------------------------------------
+        # --- 3. Train VAE (only on padded data)
+        # -------------------------------------------------------
+        vae_success = False
+        vae_attempts = 0
+        max_vae_attempts = 3
 
-            # -------------------------------------------------------
-            # --- 4. Latent space & rotation initialization
-            # -------------------------------------------------------
-            latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
-            self.latent = latent_space
-
-            # Determine rotation initialization from latent space
+        while not vae_success and vae_attempts < max_vae_attempts:
+            vae_attempts += 1
             try:
+                if self.vae_model.training:
+                    self.train_vae(projections, **kwargs)
+
+                # -------------------------------------------------------
+                # --- 4. Latent space & rotation initialization
+                # -------------------------------------------------------
+                latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
+                self.latent = latent_space
+
+                # Try latent-space initialization
                 self.rotation_initial_dict = erfl.process_latent_space(
                     z=latent_space,
-                    frames=projections,  # optical flow / latent smoothness uses padded data
-                    **kwargs
-                )
-                print("Rotation initialization from latent space successful.")
-            except:
-                self.rotation_initial_dict = erfl.process_cross_correlation(
                     frames=projections,
                     **kwargs
                 )
-                print("Rotation initialization from latent space failed, using cross-correlation instead.")
+                print("✅ Rotation initialization from latent space successful.")
+                vae_success = True
+                break  # stop loop once successful
 
+            except Exception as e:
+                print(f"VAE attempt {vae_attempts} failed: {e}")
+                if vae_attempts < max_vae_attempts:
+                    time.sleep(2)  # wait 2 seconds before retrying
+                else:
+                    print("VAE repeatedly failed — switching to cross-correlation initialization.")
+                    self.rotation_initial_dict = erfl.process_cross_correlation(
+                        frames=projections,
+                        **kwargs
+                    )
+                    print("✅ Rotation initialization via cross-correlation successful.")
 
-            # -------------------------------------------------------
-            # --- 5. Set rotation parameters
-            # -------------------------------------------------------
+        # -------------------------------------------------------
+        # --- 5. Set rotation parameters
+        # -------------------------------------------------------
+        try:
             if self.rotation_optim_case == 'quaternion':
                 rotation_params = self.rotation_initial_dict['quaternions']
             elif self.rotation_optim_case == 'basis':
@@ -386,7 +400,8 @@ class Tomography(dl.Application):
 
             # Determine number of frames needed for optimization
             N_frames_needed = self.rotation_initial_dict["peaks"][-1].item()
-        else:
+            
+        except Exception as e:
             N_frames_needed = projections.shape[0]
             self.rotation_params = nn.Parameter(torch.zeros(N_frames_needed, 4 if self.rotation_optim_case == 'quaternion' else 3, device=self._device))
 

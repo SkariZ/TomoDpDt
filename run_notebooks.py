@@ -15,6 +15,7 @@ KEYWORDS_TO_IGNORE = []
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
 
+
 def log(msg: str):
     """Log to console and file."""
     print(msg)
@@ -31,13 +32,12 @@ SUPPRESS_PATTERNS = [
     r"GPU available|TPU available|CUDA",
 ]
 
+
 def _looks_noisy(text: str) -> bool:
     """Detect if a line looks like training/progress noise."""
     return any(re.search(p, text, flags=re.IGNORECASE) for p in SUPPRESS_PATTERNS)
 
-# -------------------------------------------------------------------
-# Clean notebook outputs safely
-# -------------------------------------------------------------------
+
 def scrub_notebook_outputs(nb, keep_last_lines=5, max_stream_chars=4000):
     """
     Compact or remove noisy training logs in notebook outputs.
@@ -109,9 +109,7 @@ def scrub_notebook_outputs(nb, keep_last_lines=5, max_stream_chars=4000):
         log(f"   🧹 Scrubbed {scrubbed_count} noisy outputs")
     return nb
 
-# -------------------------------------------------------------------
-# Optional live suppression (stdout/stderr)
-# -------------------------------------------------------------------
+
 class StreamFilter(io.StringIO):
     """Filters out Lightning/tqdm spam in real-time."""
     def write(self, s):
@@ -121,9 +119,7 @@ class StreamFilter(io.StringIO):
             return
         super().write(s)
 
-# -------------------------------------------------------------------
-# Main runner
-# -------------------------------------------------------------------
+
 def run_notebooks():
     with open(LOG_FILE, "w", encoding="utf-8") as f:
         f.write(f"Notebook run started at {datetime.now()}\n\n")
@@ -174,7 +170,7 @@ def run_notebooks():
     log("\n🎉 All notebooks processed.")
     log(f"Completed at {datetime.now()}")
 
-# -------------------------------------------------------------------
+
 if __name__ == "__main__":
     run_notebooks()
 

@@ -371,11 +371,11 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
     # Check if there are any outlier peaks that have a very low value compared to the others
 
     peak_values = res[peaks]
-    mean_peak_value = np.mean(peak_values)
+    med_peak_value = np.median(peak_values)
     filtered_peaks = [peaks[0]]  # Always keep the first peak
     for pk in peaks[1:]:
-        if res[pk] >= 0.6 * mean_peak_value:
-            filtered_peaks.append(pk)    
+        if res[pk] >= 0.66 * med_peak_value:
+            filtered_peaks.append(pk)
 
     return filtered_peaks
 
