@@ -369,7 +369,6 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
         peaks = np.append(peaks, len(res)-1)
 
     # Check if there are any outlier peaks that have a very low value compared to the others
-
     peak_values = res[peaks]
     med_peak_value = np.median(peak_values)
     filtered_peaks = [peaks[0]]  # Always keep the first peak
@@ -534,6 +533,17 @@ def compute_angles_from_peaks(
 
     if len(peaks) < 2:
         raise ValueError("Not enough peaks detected for angle estimation.")
+
+    peak_values = cc[peaks]
+    med_peak_value = np.median(peak_values)
+    filtered_peaks = [] 
+    for pk in peaks:
+        if peak_values[pk] >= 0.66 * med_peak_value:
+            filtered_peaks.append(pk)
+    peaks = np.array(filtered_peaks)
+
+    if len(peaks) < 2:
+        raise ValueError("Not enough valid peaks detected after filtering.")
 
     # Choose angular increment based on model
     if rotation_period.lower() == "pi":

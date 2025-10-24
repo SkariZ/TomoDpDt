@@ -376,6 +376,21 @@ class Tomography(dl.Application):
                 print(f"VAE attempt {vae_attempts} failed: {e}")
                 if vae_attempts < max_vae_attempts:
                     time.sleep(2)  # wait 2 seconds before retrying
+
+                    # Build VAE to match padded dimensions
+                    vae = vm.ConvVAE(
+                        input_shape=(self.CH, self.H_vae, self.W_vae),
+                        latent_dim=2,
+                        output_activation='sigmoid' if self.normalize else 'linear'
+                    )
+                    self.vae_model.encoder = vae.encoder
+                    self.vae_model.decoder = vae.decoder
+                    self.vae_model.fc_mu = vae.fc_mu
+                    self.vae_model.fc_var = vae.fc_var
+                    self.vae_model.fc_dec = vae.fc_dec
+                    if not self.normalize:
+                        self.vae_model.reconstruction_loss = torch.nn.L1Loss()
+
                 else:
                     print("VAE repeatedly failed — switching to cross-correlation initialization.")
                     self.rotation_initial_dict = erfl.process_cross_correlation(
@@ -400,7 +415,7 @@ class Tomography(dl.Application):
 
             # Determine number of frames needed for optimization
             N_frames_needed = self.rotation_initial_dict["peaks"][-1].item()
-            
+
         except Exception as e:
             N_frames_needed = projections.shape[0]
             self.rotation_params = nn.Parameter(torch.zeros(N_frames_needed, 4 if self.rotation_optim_case == 'quaternion' else 3, device=self._device))

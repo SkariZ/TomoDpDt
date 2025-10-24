@@ -7,6 +7,7 @@ from tomodpdt.rotations import *
 from tomodpdt.simulate import *
 from tomodpdt.volumes import *
 from tomodpdt.helpers import *
+from tomodpdt.fft_loader import *
 
 
 
