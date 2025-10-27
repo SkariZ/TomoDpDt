@@ -672,7 +672,10 @@ class Tomography(dl.Application):
                         axis=-1)
 
                 # Permute to (B, C, H, W). I.e move the channels to the second dimension
-                estimated_projections = estimated_projections.permute(0, 3, 1, 2)
+                if estimated_projections.dim() == 4 and estimated_projections.shape[1] != self.CH:
+                    estimated_projections = estimated_projections.permute(0, 3, 1, 2) # shape (B, C, H, W)
+                if estimated_projections.dim() == 3 and estimated_projections.shape[1] != self.CH:
+                    estimated_projections = estimated_projections.unsqueeze(1)  # shape (B, 1, H, W)
 
                 # Add the estimated projections to the batch
                 estimated_projections_batch[b] = estimated_projections
