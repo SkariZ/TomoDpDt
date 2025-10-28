@@ -84,6 +84,15 @@ def create_data(
 
     quaternions = torch.tensor(quaternions, dtype=torch.float32, device=DEV)
 
+    # Handle translations
+    if translations is not None:
+        translations = torch.tensor(translations, dtype=torch.float32, device=DEV)
+    else:
+        translations = None
+
+    # Number of samples
+    samples = quaternions.shape[0]
+
     # Imaging model
     if isinstance(image_modality, torch.nn.Module):
         imaging_model = image_modality
@@ -122,7 +131,7 @@ def create_data(
             print(f'Simulating... {i/samples * 100:.1f}%')
 
         # Rotate volume
-        volume_rot = rotmod.apply_rotation(volume=object, q=quaternions[i], translations=translations[i] if translations is not None else None)
+        volume_rot = rotmod.apply_rotation_batch(volume=object, quaternions=quaternions[i:i+1], translations=translations[i:i+1] if translations is not None else None)
 
         # Forward model
         image = imaging_model(volume_rot)

@@ -202,7 +202,6 @@ def plot_slice_object(object, save_name="object", save_folder=None, dpi=100):
     plt.show()
 
 
-
 def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=100):
     """
     Plots quaternion components over frames.
@@ -228,6 +227,32 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
     
+    plt.show()
+
+
+def plot_translations(translations, save_name="translations", save_folder=None, dpi=100):
+    """
+    Plots translation components over frames.
+
+    Parameters:
+    translations (numpy array): 2D array representing the translation components over frames.
+    """
+
+    if isinstance(translations, torch.Tensor):
+        translations = translations.cpu().numpy()
+
+    plt.figure(figsize=(7, 4))
+    plt.plot(translations[:, 0], label='t_x', linewidth=2)
+    plt.plot(translations[:, 1], label='t_y', linewidth=2)
+    plt.plot(translations[:, 2], label='t_z', linewidth=2)
+    plt.legend()
+    plt.xlabel('Frame')
+    plt.ylabel('Translation')
+    plt.title('Translations over time')
+
+    if save_folder is not None:
+        plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
+
     plt.show()
 
 
@@ -649,7 +674,7 @@ class TomoPlotter:
             self._save_fig('quaternions_scatter')
             plt.show()
     
-    def plot_translations(self, translations=None, save_name="translations"):
+    def plot_translations(self, translations=None, t_gt=None, save_name="translations"):
         if translations is None:
             translations = self.tomo.get_translations_final().detach().cpu().numpy()
 
@@ -657,10 +682,18 @@ class TomoPlotter:
         plt.plot(translations[:, 0], label='x', linewidth=2)
         plt.plot(translations[:, 1], label='y', linewidth=2)
         plt.plot(translations[:, 2], label='z', linewidth=2)
+        
+        if t_gt is not None:
+            plt.plot(t_gt[:, 0], label='x-gt', linewidth=2)
+            plt.plot(t_gt[:, 1], label='y-gt', linewidth=2)
+            plt.plot(t_gt[:, 2], label='z-gt', linewidth=2)
+        
         plt.legend()
         plt.xlabel('Frame')
         plt.ylabel('Translation')
         plt.title('Translations over time')
+
+
         self._save_fig(save_name)
         plt.show()
 

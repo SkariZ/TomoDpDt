@@ -231,7 +231,7 @@ class Tomography(dl.Application):
         # Flag to enable/disable on_train_batch_end operations
         self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
         self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
-        self.smooth_startup = kwargs.get('smooth_startup', True)
+        self.smooth_startup = kwargs.get('smooth_startup', True) if automatic_optimization else False
 
         # Flags to keep track of requires_grad status
         self.volume_flag = True
@@ -295,8 +295,14 @@ class Tomography(dl.Application):
                 _, C, H, W = projections.shape
                 self.H_orig, self.W_orig = H, W
 
-                # Crop projections to 64*64 if possible, else to 32*32
-                if H >= 64 and W >= 64:
+                # Crop projections to 96*96 if possible else, 64*64 if possible, else to 32*32
+                if H >= 96 and W >= 96:
+                    # Crop to 96*96 centered
+                    start_h = (H - 96) // 2
+                    start_w = (W - 96) // 2
+                    projections = projections[:, :, start_h:start_h + 96, start_w:start_w + 96]
+                    H, W = projections.shape[2], projections.shape[3]
+                elif H >= 64 and W >= 64:
                     # Crop to 64*64 centered
                     start_h = (H - 64) // 2
                     start_w = (W - 64) // 2
@@ -837,9 +843,6 @@ class Tomography(dl.Application):
                 self.volume.grad = None
                 self.rotation_params.grad = None
                 self.translation_params.grad = None
-
-                # Increment global step
-                self.increment_global_step()
 
                 return tot_loss
         else:

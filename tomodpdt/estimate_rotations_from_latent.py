@@ -537,8 +537,8 @@ def compute_angles_from_peaks(
     peak_values = cc[peaks]
     med_peak_value = np.median(peak_values)
     filtered_peaks = [] 
-    for pk in peaks:
-        if peak_values[pk] >= 0.66 * med_peak_value:
+    for pk in peak_values:
+        if pk >= 0.66 * med_peak_value:
             filtered_peaks.append(pk)
     peaks = np.array(filtered_peaks)
 
