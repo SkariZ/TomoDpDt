@@ -484,12 +484,15 @@ class TomoPlotter:
 
     def plot_reconstructed_vs_gt(self, pred=None, gt=None, save_name='recon_vs_gt', column_headers=["Reconstructed", "Ground Truth"], forward=False):
 
-        if pred is None:
+        # Randomly select 12 frame indices
+        r_idx = torch.randint(0, self.tomo.frames.shape[0], (12,))
 
+        if pred is None:
             if not forward:
                 try: 
                     m = self.tomo.vae_model.to(self.tomo.frames.device)
                     pred = m(self.tomo.frames)[0].cpu().numpy()
+                    pred = pred[r_idx]
                 except:
                     # Crop to size tomo.H_vae, tomo.W_vae
                     start_h = (self.tomo.frames.shape[2] - self.tomo.H_vae) // 2
@@ -497,11 +500,16 @@ class TomoPlotter:
                     frames = self.tomo.frames[:, :, start_h:start_h + self.tomo.H_vae, start_w:start_w + self.tomo.W_vae]
                     pred = m(frames)[0].cpu().numpy()
                     gt = frames.cpu().numpy()
+                    pred = pred[r_idx]
+                    gt = gt[r_idx]
+
             else:
-                pred = self.tomo.full_forward_final(max_projections=10).detach().cpu().numpy()
+                pred = self.tomo.full_forward_final(max_projections=10, idx=r_idx).detach().cpu().numpy()
+
 
         if gt is None:
-            gt = self.tomo.frames[:9].cpu().numpy()
+            gt = self.tomo.frames[r_idx][:9].cpu().numpy()
+
 
         fig, ax = plt.subplots(3, 6, figsize=(12, 6))
         plt.suptitle(f"{column_headers[0]} vs {column_headers[1]} Frames", fontsize=14)
@@ -512,13 +520,13 @@ class TomoPlotter:
         for i in range(3):
             for j in range(3):
                 ax[i, j].imshow(pred[i * 3 + j, 0], cmap="gray")
-                ax[i, j].set_title(f'Recon {i * 3 + j}')
+                ax[i, j].set_title(f'Recon {r_idx[i * 3 + j]}')
                 ax[i, j].axvline(x=pred.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j].axhline(y=pred.shape[3] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j].axis('off')
 
                 ax[i, j + 3].imshow(gt[i * 3 + j, 0], cmap="gray")
-                ax[i, j + 3].set_title(f'GT {i * 3 + j}')
+                ax[i, j + 3].set_title(f'GT {r_idx[i * 3 + j]}')
                 ax[i, j + 3].axvline(x=gt.shape[2] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j + 3].axhline(y=gt.shape[3] // 2, color='red', linestyle='--', linewidth=1, alpha=0.5)
                 ax[i, j + 3].axis('off')
@@ -540,6 +548,30 @@ class TomoPlotter:
         ax[1].set_title("Sum along y-axis")
         ax[2].imshow(obj.sum(2))
         ax[2].set_title("Sum along z-axis")
+
+        fig.colorbar(im, ax=ax)
+        self._save_fig(save_name)
+        plt.show()
+
+    def plot_slice_object(self, obj=None, save_name="object"):
+
+        if obj is None:
+            obj = self.tomo.get_volume().detach().cpu().numpy()
+
+        if obj.ndim != 3:
+            raise ValueError("Input 'object' must be a 3D array.")
+
+        mid = [s // 2 for s in obj.shape]
+
+        fig, ax = plt.subplots(1, 3, figsize=(10, 3))
+        plt.suptitle(f"Central slices of {save_name}")
+
+        im = ax[0].imshow(obj[mid[0], :, :], cmap='viridis')
+        ax[0].set_title("XY Slice (Z-mid)")
+        ax[1].imshow(obj[:, mid[1], :], cmap='viridis')
+        ax[1].set_title("XZ Slice (Y-mid)")
+        ax[2].imshow(obj[:, :, mid[2]], cmap='viridis')
+        ax[2].set_title("YZ Slice (X-mid)")
 
         fig.colorbar(im, ax=ax)
         self._save_fig(save_name)
@@ -682,8 +714,9 @@ class TomoPlotter:
         plt.plot(translations[:, 0], label='x', linewidth=2)
         plt.plot(translations[:, 1], label='y', linewidth=2)
         plt.plot(translations[:, 2], label='z', linewidth=2)
-        
+
         if t_gt is not None:
+            t_gt = t_gt.cpu().numpy()
             plt.plot(t_gt[:, 0], label='x-gt', linewidth=2)
             plt.plot(t_gt[:, 1], label='y-gt', linewidth=2)
             plt.plot(t_gt[:, 2], label='z-gt', linewidth=2)

@@ -153,8 +153,33 @@ def process_latent_space(
         if end > start:
             angles[start:end] = torch.linspace(angles[start], angles[end], end - start)
 
+    # --- Extend beyond last peak using the same angular speed as the last segment ---
+    last_pk = peaks[-1]
+    n_frames = len(z)
+    remaining = n_frames - last_pk
+
+    if remaining > 0:
+        if len(peaks) > 1:
+            # Estimate angular speed (radians per frame) from last segment
+            prev_pk = peaks[-2]
+            frames_per_rotation = last_pk - prev_pk
+            angular_speed = rotation_period / frames_per_rotation
+        else:
+            # Fallback if only one peak detected
+            angular_speed = rotation_period / n_frames
+
+        # Continue rotation smoothly with the same angular speed
+        last_angle = angles[last_pk]
+        angles_remain = last_angle + torch.arange(1, remaining + 1) * angular_speed
+
+        # Concatenate to form full angle series
+        angles = torch.cat((angles, angles_remain), dim=0)
+
+    # Trim angles to match latent space length. For safety.
+    angles = angles[:len(z)]
+
     # Initialize rotation axis
-    angle_rotations = torch.zeros(max(peaks), 4)
+    angle_rotations = torch.zeros(len(angles)-1, 4)
     angle_rotations[:, 0] = angles[:-1]
 
     if initial_axes == 'x':
@@ -172,6 +197,7 @@ def process_latent_space(
     qw = torch.cos(half_angles)
     sin_half_angles = torch.sin(half_angles)
     q_xyz = axes * sin_half_angles.unsqueeze(1)
+
     if quaternions is None:
         quaternions = torch.cat((qw.unsqueeze(1), q_xyz), dim=1)
     else:

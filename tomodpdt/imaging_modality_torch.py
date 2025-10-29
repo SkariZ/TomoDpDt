@@ -9,6 +9,7 @@ except:
 
 import deeptrack
 from deeptrack.backend.units import create_context
+from deeptrack.aberrations import SphericalAberration
 
 
 def setup_optics(
@@ -57,7 +58,8 @@ def setup_optics(
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
-            output_region=(0, 0, padded_nx, padded_ny)
+            output_region=(0, 0, padded_nx, padded_ny),
+            pupil=SphericalAberration()
         )
         return_field = False
     elif microscopy_regime == 'darkfield':

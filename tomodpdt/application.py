@@ -174,7 +174,7 @@ class Tomography(dl.Application):
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
-            'binarization_loss': 1.0  # Only used if microscopy_regime is fluorescence
+            'binarization_loss': 0.1  # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only "projection", rtv and rtr losses)
@@ -232,6 +232,8 @@ class Tomography(dl.Application):
         self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
         self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
         self.smooth_startup = kwargs.get('smooth_startup', True) if automatic_optimization else False
+        self.smooth_startup_rotations = kwargs.get('smooth_startup_rotations', 100) if automatic_optimization else 0
+        self.smooth_startup_translations = kwargs.get('smooth_startup_translations', 200) if automatic_optimization else 0
 
         # Flags to keep track of requires_grad status
         self.volume_flag = True
@@ -240,14 +242,17 @@ class Tomography(dl.Application):
 
         # Set binarization flag for fluorescence regime
         self.binarize_volume = True if self.imaging_model.microscopy_regime == "fluorescence" else False
-        self.alpha_volume = 1.0  # sigmoid scaling factor (annealed later)
+        self.alpha_volume = 0.5
 
         # Set rtv_loss, so_loss to 0 if fluorescence regime is used
         if self.binarize_volume:
             self.loss_weights['rtv_loss'] = 0.0 # no TV regularization in fluorescence
             self.loss_weights['so_loss'] = 0.0 # no strictly over loss in fluorescence
-            self.loss_weights['proj_loss'] = 1000.0
-            self.learning_rate_volume = 5e-2
+            self.loss_weights['proj_loss'] = 1e3
+            self.learning_rate_volume = 8e-4
+
+            self.smooth_startup_rotations = 1000
+            self.smooth_startup_translations = 2000
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -322,7 +327,7 @@ class Tomography(dl.Application):
 
                 # Estimate beta
                 if self.normalize:
-                    self.vae_model.beta = 0.025
+                    self.vae_model.beta = 0.001 if 'fluorescence' in self.imaging_model.microscopy_regime else 0.025
                 else:
                     r_loss = torch.mean(torch.abs(projections - torch.mean(projections)))
                     kl_loss = 0.5 * torch.mean(torch.sum(
@@ -589,9 +594,16 @@ class Tomography(dl.Application):
         nx, ny, nz = self.volume_size  # get actual volume dimensions
 
         if self.binarize_volume:
-            # learnable logits (unconstrained)
-            self.volume_logits = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device))
-            # for forward compatibility
+            # Initialize logits near zero — ensures sigmoid not saturated
+            self.volume_logits = nn.Parameter(
+                0.1 * torch.rand(nx, ny, nz, device=self._device) - 3.0
+            )
+
+            # Alpha controls sigmoid smoothness (smaller = softer)
+            # Keep it low (e.g., 0.5–1.0) for fluorescence/binary volumes
+            self.alpha_volume = 0.5
+
+            # for forward compatibility self.volume = torch.sigmoid(self.alpha_volume * self.volume_logits)
             self.volume = torch.sigmoid(self.alpha_volume * self.volume_logits)
 
         elif self.initial_volume == 'gaussian':
@@ -704,18 +716,18 @@ class Tomography(dl.Application):
         if hasattr(self, 'H_orig') and hasattr(self, 'W_orig'):
             if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
                 frames_batch = self.unpad_to_original(frames_batch)
-
+        
         if self.smooth_startup:
             # If global_step is below 100 set the rotation_params to not require gradients
-            if self.global_step < 100 and self.rotation_params.requires_grad == True and self.rotation_params_flag == True:
+            if self.global_step < self.smooth_startup_rotations and self.rotation_params.requires_grad == True and self.rotation_params_flag == True:
                 self.rotation_params.requires_grad = False
-            elif self.global_step >= 100 and self.rotation_params.requires_grad == False and self.rotation_params_flag == True:
+            elif self.global_step >= self.smooth_startup_rotations and self.rotation_params.requires_grad == False and self.rotation_params_flag == True:
                 self.rotation_params.requires_grad = True
 
             # If global_step is below 200 set the translation_params to not require gradients
-            if self.global_step < 200 and self.translation_params.requires_grad == True and self.translation_params_flag == True:
+            if self.global_step < self.smooth_startup_translations and self.translation_params.requires_grad == True and self.translation_params_flag == True:
                 self.translation_params.requires_grad = False
-            elif self.global_step >= 200 and self.translation_params.requires_grad == False and self.translation_params_flag == True:
+            elif self.global_step >= self.smooth_startup_translations and self.translation_params.requires_grad == False and self.translation_params_flag == True:
                 self.translation_params.requires_grad = True
 
         # Forward pass: estimate projections
@@ -756,9 +768,19 @@ class Tomography(dl.Application):
 
             # Binarization loss for fluorescence regime
             if self.imaging_model.microscopy_regime == 'fluorescence':
+                
+                # Recompute projection loss for fluorescence regime
+                tot_loss = tot_loss - proj_loss  # Remove projection loss
+                proj_loss_fluorescence = self.projection_loss_fluorescence(yhat, frames_batch)
+                tot_loss += proj_loss_fluorescence * self.loss_weights['proj_loss']
+
+                # Remove old proj_loss and add new one
+                del loss_dict["proj_loss"]
+                loss_dict["proj_loss"] = proj_loss
+
                 volume = self.get_volume().detach()
                 binarization_loss = self.compute_binarization_loss(volume)
-                tot_loss += binarization_loss
+                tot_loss += binarization_loss * self.loss_weights['binarization_loss']
                 loss_dict["binarization_loss"] = binarization_loss
 
             # Only keep non-zero losses
@@ -890,6 +912,12 @@ class Tomography(dl.Application):
             frames_batch = frames_batch[:, 0] + 1j * frames_batch[:, 1]
 
         return torch.square(torch.abs(yhat - frames_batch)).mean()
+
+    def projection_loss_fluorescence(self, yhat, frames_batch):
+        """
+        Compute the projection loss using Mean Absolute Error (MAE) for fluorescence regime.
+        """
+        return torch.abs(yhat - frames_batch).mean()
 
     def compute_loss(self, yhat, frames_batch, loss_weights=None):
         """
@@ -1055,7 +1083,7 @@ class Tomography(dl.Application):
         
         return (λ1 * torch.sum(torch.square(qd)) + λ2 * torch.sum(torch.square(qdd))) / q.shape[0]
 
-    def compute_binarization_loss(self, volume, λ_bin=0.1):
+    def compute_binarization_loss(self, volume, λ_bin=1.0):
         return λ_bin * torch.mean(volume * (1 - volume))
 
     def get_volume(self):
@@ -1223,12 +1251,17 @@ class Tomography(dl.Application):
 
         N = self.rotation_params.shape[0]
 
-        if rand_idx:
+        if idx is not None:
+            N = len(idx)
+            if isinstance(idx, list):
+                indexes = torch.tensor(idx, device=self._device, dtype=torch.long)
+            else:
+                indexes = idx.to(self._device)
+
+        elif rand_idx:
+            indexes = torch.arange(0, N, device=self._device)
             indexes = indexes[torch.randperm(indexes.shape[0])]
 
-        elif idx is not None:
-            N = len(idx)
-            indexes = torch.tensor(idx, device=self._device)
         else:
             indexes = torch.arange(0, N, device=self._device)
 
@@ -1323,7 +1356,6 @@ class Tomography(dl.Application):
         for param in self.parameters():
             param.requires_grad = requires_grad
 
-
     def toggle_gradients_rotation_translation(self, requires_grad: bool):
         """
         Toggle gradients for both rotation and translation parameters.
@@ -1335,7 +1367,6 @@ class Tomography(dl.Application):
             self.translation_params.requires_grad = requires_grad
             self.translation_params_flag = requires_grad
 
-
     def toggle_gradients_quaternion(self, requires_grad: bool):
         """
         Toggle gradients for quaternion (rotation) parameters only.
@@ -1344,7 +1375,6 @@ class Tomography(dl.Application):
             self.rotation_params.requires_grad = requires_grad
             self.rotation_params_flag = requires_grad
 
-
     def toggle_gradients_translation(self, requires_grad: bool):
         """
         Toggle gradients for translation parameters only.
@@ -1352,7 +1382,6 @@ class Tomography(dl.Application):
         if hasattr(self, "translation_params"):
             self.translation_params.requires_grad = requires_grad
             self.translation_params_flag = requires_grad
-
 
     def toggle_gradients_volume(self, requires_grad: bool):
         """
