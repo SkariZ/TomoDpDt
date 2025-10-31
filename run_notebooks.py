@@ -10,7 +10,7 @@ NOTEBOOK_DIR = Path("Notebooks")
 LOG_FILE = Path("Logs/rerun_notebooks.log")
 KERNEL_NAME = "python3"
 STOP_ON_ERROR = False
-KEYWORDS_TO_IGNORE = []
+KEYWORDS_TO_IGNORE = ['1.', '2.', '3.', '6.']
 # ==============
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)
@@ -31,7 +31,6 @@ SUPPRESS_PATTERNS = [
     r"loss",
     r"GPU available|TPU available|CUDA",
 ]
-
 
 def _looks_noisy(text: str) -> bool:
     """Detect if a line looks like training/progress noise."""

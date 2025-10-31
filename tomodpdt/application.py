@@ -8,6 +8,7 @@ from torch.utils.data import DataLoader, TensorDataset
 
 from typing import Optional, Sequence
 import time
+import numpy as np
 
 # Importing the necessary modules
 try: 
@@ -174,7 +175,7 @@ class Tomography(dl.Application):
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
-            'binarization_loss': 0.1  # Only used if microscopy_regime is fluorescence
+            'binarization_loss': 100.0  # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only "projection", rtv and rtr losses)
@@ -249,9 +250,9 @@ class Tomography(dl.Application):
             self.loss_weights['rtv_loss'] = 0.0 # no TV regularization in fluorescence
             self.loss_weights['so_loss'] = 0.0 # no strictly over loss in fluorescence
             self.loss_weights['proj_loss'] = 1e3
-            self.learning_rate_volume = 8e-4
+            self.learning_rate_volume = 1e-2
 
-            self.smooth_startup_rotations = 1000
+            self.smooth_startup_rotations = 2000
             self.smooth_startup_translations = 2000
 
     def initialize_parameters(self, projections, **kwargs):
@@ -473,12 +474,17 @@ class Tomography(dl.Application):
 
         # --- Volume parameters ---
         if getattr(self, "binarize_volume", False):
-            volume_param = getattr(self, "volume_logits", None)
+            # optimize logits (leaf tensor)
+            param_groups.append({
+                "params": [self.volume_logits],
+                "lr": self.learning_rate_volume
+            })
         else:
-            volume_param = getattr(self, "volume", None)
-
-        if volume_param is not None and getattr(volume_param, "requires_grad", False):
-            param_groups.append({'params': [volume_param], 'lr': self.learning_rate_volume})
+            # optimize the actual volume (direct nn.Parameter)
+            param_groups.append({
+                "params": [self.volume],
+                "lr": self.learning_rate_volume
+            })
 
         # --- Rotation parameters ---
         if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
@@ -594,17 +600,9 @@ class Tomography(dl.Application):
         nx, ny, nz = self.volume_size  # get actual volume dimensions
 
         if self.binarize_volume:
-            # Initialize logits near zero — ensures sigmoid not saturated
-            self.volume_logits = nn.Parameter(
-                0.1 * torch.rand(nx, ny, nz, device=self._device) - 3.0
-            )
-
-            # Alpha controls sigmoid smoothness (smaller = softer)
-            # Keep it low (e.g., 0.5–1.0) for fluorescence/binary volumes
-            self.alpha_volume = 0.5
-
-            # for forward compatibility self.volume = torch.sigmoid(self.alpha_volume * self.volume_logits)
-            self.volume = torch.sigmoid(self.alpha_volume * self.volume_logits)
+            self.volume_logits = nn.Parameter(torch.randn(nx, ny, nz, device=self._device))
+            self.logit_bias = -8.0       # ensures ~zero initial emission
+            self.volume = torch.sigmoid(self.volume_logits + self.logit_bias)
 
         elif self.initial_volume == 'gaussian':
             x = torch.arange(nx) - nx / 2
@@ -647,20 +645,30 @@ class Tomography(dl.Application):
         given indices by rotating the volume and imaging it.
         """
 
+        # --- 1. Fetch parameters ---
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         translations = self.get_translations(self.translation_params)[idx]
+
+        # --- 2. Retrieve and condition the volume ---
         volume = self.get_volume()
 
-        batch_size = quaternions.shape[0]
-        estimated_projections_batch = torch.zeros(batch_size, self.CH, self.nx, self.ny, device=self._device)
+        # For fluorescence or binary volumes, enforce valid [0,1] range without breaking gradients
+        if getattr(self, "binarize_volume", False):
+            volume = torch.clamp(F.relu(volume), 0.0, 1.0)
 
-        # Create minibatches for rotation
+        batch_size = quaternions.shape[0]
+        estimated_projections_batch = torch.zeros(
+            batch_size, self.CH, self.nx, self.ny, device=self._device
+        )
+
+        # --- 3. Minibatching setup ---
         if batch_size < self.minibatch:
             self.minibatch = batch_size
 
         indexes = torch.arange(0, batch_size)
         b_idx = [indexes[i:i + self.minibatch] for i in range(0, len(indexes), self.minibatch)]
 
+        # --- 4. Loop through mini-batches ---
         for b in b_idx:
             # Apply rotations to a single volume using a batch of quaternions
             rotated_volumes = self.apply_rotation_batch(
@@ -669,40 +677,37 @@ class Tomography(dl.Application):
                 translations=translations[b] if translations is not None else None
             )
             
-            # Check if imaging model is a nn.Module
+            # --- 5. Forward through the imaging model ---
             if isinstance(self.imaging_model, nn.Module):
                 estimated_projections = self.imaging_model(rotated_volumes)
 
+                # Handle single-channel (e.g., brightfield or fluorescence intensity)
                 if self.CH == 1:
-                    # Check if the estimated projection is complex and take the imaginary part
                     if estimated_projections.dtype == torch.complex64:
                         estimated_projections = estimated_projections.imag
                 
-                # If two channels are present, concatenate them - for complex valued projections
+                # Handle two-channel complex projections
                 elif self.CH > 1 and estimated_projections.dtype == torch.complex64:
+                    estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)
+                    estimated_projections = estimated_projections - self.V0 + 1
+                    estimated_projections = torch.cat(
+                        (estimated_projections.real, estimated_projections.imag), dim=-1
+                    )
 
-                    estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)  # Phase correction
-                    estimated_projections = estimated_projections - self.V0  + 1 # Subtract the initial volume to remove the background
-
-                    # Concatenate real and imaginary parts along the last dimension
-                    estimated_projections = torch.concatenate(
-                        (estimated_projections.real, estimated_projections.imag),
-                        axis=-1)
-
-                # Permute to (B, C, H, W). I.e move the channels to the second dimension
+                # Ensure (B, C, H, W) layout
                 if estimated_projections.dim() == 4 and estimated_projections.shape[1] != self.CH:
-                    estimated_projections = estimated_projections.permute(0, 3, 1, 2) # shape (B, C, H, W)
+                    estimated_projections = estimated_projections.permute(0, 3, 1, 2)
                 if estimated_projections.dim() == 3 and estimated_projections.shape[1] != self.CH:
-                    estimated_projections = estimated_projections.unsqueeze(1)  # shape (B, 1, H, W)
+                    estimated_projections = estimated_projections.unsqueeze(1)
 
-                # Add the estimated projections to the batch
+                # Store the batch projections
                 estimated_projections_batch[b] = estimated_projections
             
             else:
                 raise ValueError("Imaging model must be a nn.Module.")
 
         return estimated_projections_batch
-    
+
     def training_step(self, batch, batch_idx):
         """
         Training step for the model. Computes the loss and logs it.
@@ -1087,8 +1092,12 @@ class Tomography(dl.Application):
         return λ_bin * torch.mean(volume * (1 - volume))
 
     def get_volume(self):
-        if self.binarize_volume:
-            return torch.sigmoid(self.alpha_volume * self.volume_logits)
+        """
+        Get the volume from the volume parameters."""
+
+        if hasattr(self, "binarize_volume") and self.binarize_volume:
+            volume = torch.sigmoid(self.alpha_volume * self.volume_logits + self.logit_bias)
+            return volume
         else:
             return self.volume
 
@@ -1253,9 +1262,9 @@ class Tomography(dl.Application):
 
         if idx is not None:
             N = len(idx)
-            if isinstance(idx, list):
+            if isinstance(idx, (list, np.ndarray)):
                 indexes = torch.tensor(idx, device=self._device, dtype=torch.long)
-            else:
+            elif isinstance(idx, torch.Tensor):
                 indexes = idx.to(self._device)
 
         elif rand_idx:
