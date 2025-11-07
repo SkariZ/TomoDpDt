@@ -175,7 +175,7 @@ class Tomography(dl.Application):
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
-            'binarization_loss': 100.0  # Only used if microscopy_regime is fluorescence
+            'binarization_loss': 10.0  # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only "projection", rtv and rtr losses)
@@ -243,14 +243,14 @@ class Tomography(dl.Application):
 
         # Set binarization flag for fluorescence regime
         self.binarize_volume = True if self.imaging_model.microscopy_regime == "fluorescence" else False
-        self.alpha_volume = 0.5
 
         # Set rtv_loss, so_loss to 0 if fluorescence regime is used
         if self.binarize_volume:
             self.loss_weights['rtv_loss'] = 0.0 # no TV regularization in fluorescence
             self.loss_weights['so_loss'] = 0.0 # no strictly over loss in fluorescence
-            self.loss_weights['proj_loss'] = 1e3
-            self.learning_rate_volume = 1e-2
+            self.loss_weights['proj_loss'] = 5e3
+            self.loss_weights['latent_loss'] = 1.0
+            self.learning_rate_volume = 1e-3
 
             self.smooth_startup_rotations = 2000
             self.smooth_startup_translations = 2000
@@ -473,18 +473,11 @@ class Tomography(dl.Application):
         param_groups = []
 
         # --- Volume parameters ---
-        if getattr(self, "binarize_volume", False):
-            # optimize logits (leaf tensor)
-            param_groups.append({
-                "params": [self.volume_logits],
-                "lr": self.learning_rate_volume
-            })
-        else:
-            # optimize the actual volume (direct nn.Parameter)
-            param_groups.append({
-                "params": [self.volume],
-                "lr": self.learning_rate_volume
-            })
+        # optimize the actual volume (direct nn.Parameter)
+        param_groups.append({
+            "params": [self.volume],
+            "lr": self.learning_rate_volume
+        })
 
         # --- Rotation parameters ---
         if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
@@ -502,7 +495,7 @@ class Tomography(dl.Application):
 
         scheduler = {
             'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', factor=0.75, patience=10, threshold=1e-3, min_lr=1e-6
+                optimizer, mode='min', factor=0.75, patience=20, threshold=1e-3, min_lr=5e-7
             ),
             'monitor': 'train_total_loss',
         }
@@ -599,11 +592,10 @@ class Tomography(dl.Application):
         """
         nx, ny, nz = self.volume_size  # get actual volume dimensions
 
+        
         if self.binarize_volume:
-            self.volume_logits = nn.Parameter(torch.randn(nx, ny, nz, device=self._device))
-            self.logit_bias = -8.0       # ensures ~zero initial emission
-            self.volume = torch.sigmoid(self.volume_logits + self.logit_bias)
-
+            self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device) * 1e-1)  # small random initialization
+        
         elif self.initial_volume == 'gaussian':
             x = torch.arange(nx) - nx / 2
             y = torch.arange(ny) - ny / 2
@@ -626,10 +618,10 @@ class Tomography(dl.Application):
         elif self.initial_volume == 'given' and self.volume_init is not None:
             self.volume = nn.Parameter(self.volume_init.to(self._device))
 
-        else:
-            raise ValueError(
-                "Invalid initial volume type. Must be 'gaussian', 'zeros', 'constant', 'random', or 'given'."
-            )
+        # Override with given volume if specified
+        if self.initial_volume == 'given' and self.volume_init is not None:
+            self.volume = nn.Parameter(self.volume_init.to(self._device))
+
 
     def initialize_translation(self, N):
         """
@@ -776,17 +768,21 @@ class Tomography(dl.Application):
                 
                 # Recompute projection loss for fluorescence regime
                 tot_loss = tot_loss - proj_loss  # Remove projection loss
-                proj_loss_fluorescence = self.projection_loss_fluorescence(yhat, frames_batch)
-                tot_loss += proj_loss_fluorescence * self.loss_weights['proj_loss']
+                proj_loss_fluorescence = self.projection_loss_fluorescence(yhat, frames_batch) * self.loss_weights['proj_loss']
+                tot_loss += proj_loss_fluorescence
 
                 # Remove old proj_loss and add new one
                 del loss_dict["proj_loss"]
-                loss_dict["proj_loss"] = proj_loss
+                loss_dict["proj_loss"] = proj_loss_fluorescence
 
-                volume = self.get_volume().detach()
-                binarization_loss = self.compute_binarization_loss(volume)
-                tot_loss += binarization_loss * self.loss_weights['binarization_loss']
+                volume = self.get_volume()
+                binarization_loss = self.compute_binarization_loss(volume) * self.loss_weights['binarization_loss']
+                tot_loss += binarization_loss
                 loss_dict["binarization_loss"] = binarization_loss
+
+                # Update total loss in the dictionary
+                del loss_dict["total_loss"]
+                loss_dict["total_loss"] = tot_loss
 
             # Only keep non-zero losses
             loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
@@ -920,9 +916,29 @@ class Tomography(dl.Application):
 
     def projection_loss_fluorescence(self, yhat, frames_batch):
         """
-        Compute the projection loss using Mean Absolute Error (MAE) for fluorescence regime.
+        Weighted MAE loss for fluorescence projections.
+        Explicitly penalizes discrepancies in bright regions more heavily.
+        Smooth and differentiable; suitable for gradient-based optimization.
         """
-        return torch.abs(yhat - frames_batch).mean()
+
+        # Normalize intensities
+        yhat_norm = yhat / (yhat.max().clamp_min(1e-8))
+        frames_batch_norm = frames_batch / (frames_batch.max().clamp_min(1e-8))
+
+        # Absolute error
+        abs_err = torch.abs(yhat_norm - frames_batch_norm)
+
+        # Intensity-based weighting (quadratic for stronger effect)
+        weights = (frames_batch_norm ** 2) + 1e-3
+
+        # Weighted mean absolute error
+        weighted_loss = (weights * abs_err).mean()
+
+        # Normal loss
+        normal_loss = F.mse_loss(yhat, frames_batch)
+
+        return weighted_loss / 10.0 + normal_loss
+
 
     def compute_loss(self, yhat, frames_batch, loss_weights=None):
         """
@@ -1096,8 +1112,7 @@ class Tomography(dl.Application):
         Get the volume from the volume parameters."""
 
         if hasattr(self, "binarize_volume") and self.binarize_volume:
-            volume = torch.sigmoid(self.alpha_volume * self.volume_logits + self.logit_bias)
-            return volume
+            return F.relu(self.volume)
         else:
             return self.volume
 
@@ -1258,27 +1273,31 @@ class Tomography(dl.Application):
         - estimated_projections (torch.Tensor): Estimated projections.
         """
 
-        N = self.rotation_params.shape[0]
+        # Determine number of projections
+        N_f = self.frames.shape[0]
 
+        # Determine indexes to process
         if idx is not None:
-            N = len(idx)
             if isinstance(idx, (list, np.ndarray)):
                 indexes = torch.tensor(idx, device=self._device, dtype=torch.long)
+
             elif isinstance(idx, torch.Tensor):
                 indexes = idx.to(self._device)
 
         elif rand_idx:
-            indexes = torch.arange(0, N, device=self._device)
+            indexes = torch.arange(0, N_f, device=self._device)
             indexes = indexes[torch.randperm(indexes.shape[0])]
 
         else:
-            indexes = torch.arange(0, N, device=self._device)
+            indexes = torch.arange(0, N_f, device=self._device)
 
-        if max_projections is not None and N > max_projections:
+        if max_projections is not None and N_f > max_projections:
             indexes = indexes[:max_projections]
 
-        N = len(indexes)
+        # Safe check so that indexes are within bounds
+        indexes = indexes[indexes < N_f]
 
+        # Forward pass to get estimated projections
         estimated_projections = self.forward(
             idx=indexes
             )
@@ -1327,17 +1346,13 @@ class Tomography(dl.Application):
 
         # --- Fluorescence regime (binarized volume via logits) ---
         if getattr(self, "imaging_model", None) is not None:
-            if getattr(self.imaging_model, "microscopy_regime", "") == "fluorescence":
-                # The learnable parameter in this case is volume_logits, not volume
-                if hasattr(self, "volume_logits"):
-                    self.volume_logits = self.volume_logits.to(device)
-            else:
-                # Continuous volume parameter (e.g., refractive index or absorption)
-                if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter):
-                    # Already moved by self.to(device), no need to reassign
-                    pass
-                elif hasattr(self, "volume"):
-                    self.volume = self.volume.to(device)
+
+            # Continuous volume parameter (e.g., refractive index or absorption)
+            if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter):
+                # Already moved by self.to(device), no need to reassign
+                pass
+            elif hasattr(self, "volume"):
+                self.volume = self.volume.to(device)
 
         # --- Rotation & translation parameters ---
         # Only move manually if they are not Parameters (already handled by .to)
@@ -1396,13 +1411,8 @@ class Tomography(dl.Application):
         """
         Toggle gradients for the volume (or logits, for fluorescence).
         """
-        # Handle fluorescence case where volume_logits is the true parameter
-        if getattr(self, "imaging_model", None) is not None and \
-        getattr(self.imaging_model, "microscopy_regime", "") == "fluorescence":
-            if hasattr(self, "volume_logits"):
-                self.volume_logits.requires_grad = requires_grad
-                self.volume_flag = requires_grad
-        elif hasattr(self, "volume"):
+
+        if hasattr(self, "volume"):
             self.volume.requires_grad = requires_grad
             self.volume_flag = requires_grad
 

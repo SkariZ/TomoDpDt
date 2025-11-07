@@ -188,6 +188,7 @@ class imaging_model(nn.Module):
                     cz = c1 // 2
                     cy = c2 // 2
                     cx = c3 // 2
+                    obj = obj.clone()
                     obj[cz, cy, cx] = 1e-7
                 image = self.optics.get(obj, self.limits, **self.filtered_properties)
             else:
