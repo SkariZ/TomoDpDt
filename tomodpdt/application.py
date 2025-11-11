@@ -175,7 +175,7 @@ class Tomography(dl.Application):
             'q0_loss': 0.0,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
-            'binarization_loss': 10.0  # Only used if microscopy_regime is fluorescence
+            'binarization_loss': 0.1  # Only used if microscopy_regime is fluorescence
             }
         
         # Set the loss weights for automatic optimization (only "projection", rtv and rtr losses)
@@ -248,12 +248,28 @@ class Tomography(dl.Application):
         if self.binarize_volume:
             self.loss_weights['rtv_loss'] = 0.0 # no TV regularization in fluorescence
             self.loss_weights['so_loss'] = 0.0 # no strictly over loss in fluorescence
-            self.loss_weights['proj_loss'] = 5e3
-            self.loss_weights['latent_loss'] = 1.0
-            self.learning_rate_volume = 1e-3
+            self.loss_weights['proj_loss'] = 1e3
+            self.loss_weights['latent_loss'] = 0.5
+            self.learning_rate_volume = 1e-1
 
-            self.smooth_startup_rotations = 2000
-            self.smooth_startup_translations = 2000
+            self.smooth_startup_rotations = 400
+            self.smooth_startup_translations = 800
+            self.sigma_update = 1.05
+
+            x = torch.arange(self.nx) - self.nx / 2
+            y = torch.arange(self.ny) - self.ny / 2
+            z = torch.arange(self.nz) - self.nz / 2
+            xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
+
+            self.sigma = 0.4
+            self.n_spots = 30
+
+            self.mesh = [
+                xx.to(self._device),
+                yy.to(self._device),
+                zz.to(self._device)
+                ]
+
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -302,19 +318,21 @@ class Tomography(dl.Application):
                 self.H_orig, self.W_orig = H, W
 
                 # Crop projections to 96*96 if possible else, 64*64 if possible, else to 32*32
-                if H >= 96 and W >= 96:
+                if H > 96 and W > 96:
                     # Crop to 96*96 centered
                     start_h = (H - 96) // 2
                     start_w = (W - 96) // 2
                     projections = projections[:, :, start_h:start_h + 96, start_w:start_w + 96]
                     H, W = projections.shape[2], projections.shape[3]
-                elif H >= 64 and W >= 64:
+
+                elif H > 64 and W > 64:
                     # Crop to 64*64 centered
                     start_h = (H - 64) // 2
                     start_w = (W - 64) // 2
                     projections = projections[:, :, start_h:start_h + 64, start_w:start_w + 64]
                     H, W = projections.shape[2], projections.shape[3]
-                elif H >= 32 and W >= 32:
+
+                elif H > 32 and W > 32:
                     # Crop to 32*32 centered
                     start_h = (H - 32) // 2
                     start_w = (W - 32) // 2
@@ -336,6 +354,10 @@ class Tomography(dl.Application):
                     ))
                     ratio = r_loss / (kl_loss + 1e-8)
                     self.vae_model.beta = 1e-5 if ratio > 1 else 1e-6
+
+                # Keyword for beta override
+                if 'vae_beta' in kwargs:
+                    self.vae_model.beta = kwargs['vae_beta']
 
                 # Build VAE to match padded dimensions
                 vae = vm.ConvVAE(
@@ -473,11 +495,14 @@ class Tomography(dl.Application):
         param_groups = []
 
         # --- Volume parameters ---
-        # optimize the actual volume (direct nn.Parameter)
-        param_groups.append({
-            "params": [self.volume],
-            "lr": self.learning_rate_volume
-        })
+        if getattr(self, "binarize_volume", False):
+            param_groups.append({
+                "params": self.mus,
+                "lr": self.learning_rate_volume
+            })
+        else:
+            if hasattr(self, "volume") and self.volume.requires_grad:
+                param_groups.append({'params': [self.volume], 'lr': self.learning_rate_volume})
 
         # --- Rotation parameters ---
         if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
@@ -592,10 +617,36 @@ class Tomography(dl.Application):
         """
         nx, ny, nz = self.volume_size  # get actual volume dimensions
 
+        #if self.binarize_volume:
+            #self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device) * 1e-1)  # small random initialization
         
-        if self.binarize_volume:
-            self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device) * 1e-1)  # small random initialization
-        
+        if self.binarize_volume and self.initial_volume != 'given':
+            # Create 3D coordinate grids
+            x = torch.arange(nx, device=self._device) - nx / 2
+            y = torch.arange(ny, device=self._device) - ny / 2
+            z = torch.arange(nz, device=self._device) - nz / 2
+            xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
+
+            # Initialize Gaussian centers (mus)
+            mus = min(nx, ny, nz) * (torch.rand(self.n_spots, 3, device=self._device) - 0.5)
+            self.mus = [
+                nn.Parameter(mus[:, 0]),
+                nn.Parameter(mus[:, 1]),
+                nn.Parameter(mus[:, 2]),
+            ]
+
+            # Compute Gaussian cloud volume
+            dx = xx[None] - self.mus[0][:, None, None, None]
+            dy = yy[None] - self.mus[1][:, None, None, None]
+            dz = zz[None] - self.mus[2][:, None, None, None]
+
+            cloud = torch.sum(
+                torch.exp(-self.sigma * (dx**2 + dy**2 + dz**2)),
+                dim=0
+            )
+
+            self.volume = cloud
+
         elif self.initial_volume == 'gaussian':
             x = torch.arange(nx) - nx / 2
             y = torch.arange(ny) - ny / 2
@@ -622,7 +673,6 @@ class Tomography(dl.Application):
         if self.initial_volume == 'given' and self.volume_init is not None:
             self.volume = nn.Parameter(self.volume_init.to(self._device))
 
-
     def initialize_translation(self, N):
         """
         Initialize the translation parameters.
@@ -643,10 +693,6 @@ class Tomography(dl.Application):
 
         # --- 2. Retrieve and condition the volume ---
         volume = self.get_volume()
-
-        # For fluorescence or binary volumes, enforce valid [0,1] range without breaking gradients
-        if getattr(self, "binarize_volume", False):
-            volume = torch.clamp(F.relu(volume), 0.0, 1.0)
 
         batch_size = quaternions.shape[0]
         estimated_projections_batch = torch.zeros(
@@ -765,7 +811,11 @@ class Tomography(dl.Application):
 
             # Binarization loss for fluorescence regime
             if self.imaging_model.microscopy_regime == 'fluorescence':
-                
+
+                # Update sigma every 50 steps
+                if self.global_step % 50 == 0 and self.global_step > 0 and self.sigma < 1.25:
+                    self.sigma = self.sigma * self.sigma_update
+
                 # Recompute projection loss for fluorescence regime
                 tot_loss = tot_loss - proj_loss  # Remove projection loss
                 proj_loss_fluorescence = self.projection_loss_fluorescence(yhat, frames_batch) * self.loss_weights['proj_loss']
@@ -779,6 +829,11 @@ class Tomography(dl.Application):
                 binarization_loss = self.compute_binarization_loss(volume) * self.loss_weights['binarization_loss']
                 tot_loss += binarization_loss
                 loss_dict["binarization_loss"] = binarization_loss
+
+                # Compute RTV loss for fluorescence regime
+                rtv_loss_fluorescence = self.rtv_loss_fluorescence(volume) * 1e-4
+                tot_loss += rtv_loss_fluorescence
+                loss_dict["rtv_loss_fluorescence"] = rtv_loss_fluorescence
 
                 # Update total loss in the dictionary
                 del loss_dict["total_loss"]
@@ -916,30 +971,21 @@ class Tomography(dl.Application):
 
     def projection_loss_fluorescence(self, yhat, frames_batch):
         """
-        Weighted MAE loss for fluorescence projections.
-        Explicitly penalizes discrepancies in bright regions more heavily.
-        Smooth and differentiable; suitable for gradient-based optimization.
+        Compute the projection loss using Mean Absolute Error (MAE) for fluorescence regime.
         """
 
-        # Normalize intensities
-        yhat_norm = yhat / (yhat.max().clamp_min(1e-8))
-        frames_batch_norm = frames_batch / (frames_batch.max().clamp_min(1e-8))
+        f_norm = frames_batch / torch.std(frames_batch, dim=(1,2,3), keepdim=True)
+        y_norm = yhat / torch.std(yhat, dim=(1,2,3), keepdim=True)
 
-        # Absolute error
-        abs_err = torch.abs(yhat_norm - frames_batch_norm)
+        return torch.abs(f_norm-y_norm).mean()
+    
+    def rtv_loss_fluorescence(self, volume):
+        """
+        Compute the RTV loss for fluorescence regime.
+        """
 
-        # Intensity-based weighting (quadratic for stronger effect)
-        weights = (frames_batch_norm ** 2) + 1e-3
-
-        # Weighted mean absolute error
-        weighted_loss = (weights * abs_err).mean()
-
-        # Normal loss
-        normal_loss = F.mse_loss(yhat, frames_batch)
-
-        return weighted_loss / 10.0 + normal_loss
-
-
+        return torch.abs(torch.sum(volume)-torch.sum(volume**2)).mean()
+    
     def compute_loss(self, yhat, frames_batch, loss_weights=None):
         """
         Compute the projection loss, latent loss, and all regularization terms.
@@ -1112,7 +1158,24 @@ class Tomography(dl.Application):
         Get the volume from the volume parameters."""
 
         if hasattr(self, "binarize_volume") and self.binarize_volume:
-            return F.relu(self.volume)
+
+            xx = self.mesh[0]
+            yy = self.mesh[1]
+            zz = self.mesh[2]
+
+            dx = xx[None] - self.mus[0][:, None, None, None]
+            dy = yy[None] - self.mus[1][:, None, None, None]
+            dz = zz[None] - self.mus[2][:, None, None, None]
+
+            volume = torch.sum(torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
+
+            # Clamp volume to [0, 1]
+            volume = torch.clamp(volume, 0, 1)
+
+            # Normalize volume to have a fixed total sum
+            volume = volume / torch.sum(volume) #* self.n_spots / 2.0
+
+            return volume
         else:
             return self.volume
 
