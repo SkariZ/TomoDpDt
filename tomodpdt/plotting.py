@@ -123,7 +123,7 @@ def plot_sinogram(frames, slice_n=None, save_name="sinogram", save_folder=None, 
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
 
 
-def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
+def plot_sum_object(object, save_name="object", save_folder=None, dpi=100, suptitle=True):
     """
     Plots the sum projections of a predicted object along different axes.
 
@@ -134,7 +134,8 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100):
     dpi (int, optional): Resolution of the saved figure. Defaults to 100.
     """
     fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-    plt.suptitle(f"Summation views of {save_name}")
+    if suptitle:
+        plt.suptitle(f"Summation views of {save_name}")
 
     if isinstance(object, torch.Tensor):
         object = object.cpu().numpy()
@@ -766,7 +767,8 @@ def visualize_3d_volume(
         surface_count=15, 
         opacity=0.5, 
         bgcolor='black', 
-        camera_position=(1.25, 1.25, 1.25)
+        camera_position=(1.25, 1.25, 1.25),
+        smooth=True
         ):
     """
     Visualizes a 3D volume as an isosurface using Plotly.
@@ -791,8 +793,9 @@ def visualize_3d_volume(
     y = np.tile(np.arange(volume.shape[1]).repeat(volume.shape[2]), volume.shape[0])  # Repeats each y-value within z slices
     z = np.tile(np.arange(volume.shape[2]), volume.shape[0] * volume.shape[1])  # Repeats z-values across the full grid
 
-    # Gaussian smoothing for better visualization
-    volume = ndimage.gaussian_filter(volume, sigma=sigma)
+    if smooth:
+        # Gaussian smoothing for better visualization
+        volume = ndimage.gaussian_filter(volume, sigma=sigma)
 
     # Determine dynamic isosurface bounds based on the volume
     isomin = volume.min() + 0.1 * (volume.max() - volume.min())

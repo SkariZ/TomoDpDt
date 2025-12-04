@@ -10,7 +10,7 @@ NOTEBOOK_DIR = Path("Notebooks")
 LOG_FILE = Path("Logs/rerun_notebooks.log")
 KERNEL_NAME = "python3"
 STOP_ON_ERROR = False
-KEYWORDS_TO_IGNORE = ['1.', '2.', '3.']
+KEYWORDS_TO_IGNORE = []
 # ==============
 
 LOG_FILE.parent.mkdir(parents=True, exist_ok=True)

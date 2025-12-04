@@ -262,7 +262,7 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
 
             self.sigma = 0.4
-            self.n_spots = 30
+            self.n_spots = 20
 
             self.mesh = [
                 xx.to(self._device),
@@ -318,28 +318,30 @@ class Tomography(dl.Application):
                 self.H_orig, self.W_orig = H, W
 
                 # Crop projections to 96*96 if possible else, 64*64 if possible, else to 32*32
-                if H > 96 and W > 96:
+                crop_arg = kwargs.get('crop_projections', True)
+
+                if H > 96 and W > 96 and crop_arg:
                     # Crop to 96*96 centered
                     start_h = (H - 96) // 2
                     start_w = (W - 96) // 2
                     projections = projections[:, :, start_h:start_h + 96, start_w:start_w + 96]
                     H, W = projections.shape[2], projections.shape[3]
 
-                elif H > 64 and W > 64:
+                elif H > 64 and W > 64 and crop_arg:
                     # Crop to 64*64 centered
                     start_h = (H - 64) // 2
                     start_w = (W - 64) // 2
                     projections = projections[:, :, start_h:start_h + 64, start_w:start_w + 64]
                     H, W = projections.shape[2], projections.shape[3]
 
-                elif H > 32 and W > 32:
+                elif H > 32 and W > 32 and crop_arg:
                     # Crop to 32*32 centered
                     start_h = (H - 32) // 2
                     start_w = (W - 32) // 2
                     projections = projections[:, :, start_h:start_h + 32, start_w:start_w + 32]
                     H, W = projections.shape[2], projections.shape[3]
-                else:
-                    raise ValueError("Projections are too small for VAE training. Minimum size is 32x32.")
+                #else:
+                #    raise ValueError("Projections are too small for VAE training. Minimum size is 32x32.")
                 
                 # The size
                 self.H_vae, self.W_vae = H, W
@@ -644,6 +646,10 @@ class Tomography(dl.Application):
                 torch.exp(-self.sigma * (dx**2 + dy**2 + dz**2)),
                 dim=0
             )
+
+            # Normalize to 0 to 1
+            cloud = cloud / cloud.max()
+            cloud = torch.clamp(cloud, 0, 0.1)
 
             self.volume = cloud
 
@@ -1173,7 +1179,7 @@ class Tomography(dl.Application):
             volume = torch.clamp(volume, 0, 1)
 
             # Normalize volume to have a fixed total sum
-            volume = volume / torch.sum(volume) #* self.n_spots / 2.0
+            #volume = volume / torch.sum(volume) #* self.n_spots / 2.0
 
             return volume
         else:
