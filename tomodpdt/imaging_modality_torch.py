@@ -135,6 +135,11 @@ class imaging_model(nn.Module):
         self.padding_value = 0.0
         self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
 
+        if self.microscopy_regime == 'brightfield':
+            self.V0 = self.pass_empty_forward(torch.zeros((self.nz, self.ny, self.nx), dtype=torch.float32, device=self.device))
+            self.V0_phase = torch.median(torch.angle(self.V0)).to(self.device)
+            self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
+
     def forward(self, obj, vmap=True):
         self.limits = self.limits.to(obj.device)
         self.fields = self.fields.to(obj.device)
@@ -153,6 +158,11 @@ class imaging_model(nn.Module):
             return imaging_vmap(obj)
         else:
             return torch.stack([self.imaging_step(sample) for sample in obj])
+        
+    def pass_empty_forward(self, obj):
+        # Pass a volume of zeros through the model to get the "background image"
+        return self.imaging_step(obj)
+
 
     def imaging_step(self, obj):
         obj = obj.to(self.device)
@@ -198,6 +208,12 @@ class imaging_model(nn.Module):
         if self.padding_xy > 0:
             image = image[self.padding_xy:-self.padding_xy, self.padding_xy:-self.padding_xy]
 
+        # Correct phase for brightfield
+        if self.microscopy_regime == 'brightfield' and getattr(self, 'V0', None) is not None:
+
+            image = image * torch.exp(-1j * self.V0_phase)
+            image = image - self.V0 + 1
+
         return image._value
 
 
@@ -221,6 +237,23 @@ class SumAvgWeighted3d2d(nn.Module):
         self.weight_along_dim = torch.linspace(1, 0, x.size()[self.dim]).to(x.device)
         w_object = x * self.weight_along_dim
         return w_object.sum(dim=self.dim, keepdim=True)
+
+
+class LearnableProjection(nn.Module):
+    def __init__(self, kernel_size=3):
+        super().__init__()
+        self.microscopy_regime = 'learnable_projection'
+        self.conv = nn.Conv3d(
+            in_channels=1,
+            out_channels=1,
+            kernel_size=kernel_size,
+            padding=kernel_size // 2,
+            bias=False
+        )
+
+    def forward(self, x):
+        x = self.conv(x)
+        return x.sum(dim=-1, keepdim=True)
 
 
 class PropagationImagingModel(nn.Module):

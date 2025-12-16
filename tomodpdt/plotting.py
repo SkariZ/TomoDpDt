@@ -156,7 +156,7 @@ def plot_sum_object(object, save_name="object", save_folder=None, dpi=100, supti
     
     plt.show()
 
-def plot_slice_object(object, save_name="object", save_folder=None, dpi=100):
+def plot_slice_object(object, save_name="object", save_folder=None, dpi=100, suptitle=True):
     """
     Plots the central slices of a 3D object along the x, y, and z axes.
 
@@ -181,7 +181,8 @@ def plot_slice_object(object, save_name="object", save_folder=None, dpi=100):
     mid = [s // 2 for s in object.shape]
 
     fig, ax = plt.subplots(1, 3, figsize=(10, 3))
-    plt.suptitle(f"Central slices of {save_name}")
+    if suptitle:
+        plt.suptitle(f"Central slices of {save_name}")
 
     # Plot central slices
     ax[0].set_title("XY Slice (Z-mid)")
@@ -221,9 +222,9 @@ def plot_quaternions(quaternions, save_name="quaternion", save_folder=None, dpi=
     plt.plot(quaternions[:, 3], label=r'$q_3$', linewidth=2)
     
     plt.legend()
-    plt.xlabel('Frame')
-    plt.ylabel('Quaternion')
-    plt.title('Quaternions over time')
+    plt.xlabel('Frame', fontsize=14)
+    plt.ylabel('Quaternion', fontsize=14)
+    plt.title('Quaternions over time', fontsize=16)
     
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
@@ -247,9 +248,9 @@ def plot_translations(translations, save_name="translations", save_folder=None, 
     plt.plot(translations[:, 1], label='t_y', linewidth=2)
     plt.plot(translations[:, 2], label='t_z', linewidth=2)
     plt.legend()
-    plt.xlabel('Frame')
-    plt.ylabel('Translation')
-    plt.title('Translations over time')
+    plt.xlabel('Frame', fontsize=14)
+    plt.ylabel('Translation', fontsize=14)
+    plt.title('Translations over time', fontsize=16)
 
     if save_folder is not None:
         plt.savefig(save_folder + f'{save_name}.png', dpi=dpi, bbox_inches='tight', pad_inches=0)
@@ -608,9 +609,9 @@ class TomoPlotter:
             for i in range(4):
                 plt.plot(q_gt[:, i], '--', label=fr'$q_{i}$ (GT)', linewidth=2)
         plt.legend()
-        plt.xlabel('Frame')
-        plt.ylabel('Quaternion')
-        plt.title('Quaternions over time')
+        plt.xlabel('Frame', fontsize=14)
+        plt.ylabel('Quaternion', fontsize=14)
+        plt.title('Quaternions over time', fontsize=16)
         self._save_fig(save_name)
         plt.show()
 
@@ -635,7 +636,7 @@ class TomoPlotter:
         self._save_fig(save_name)
         plt.show()
 
-    def plot_smooth_dist_intial_guess(self, q_gt=None):
+    def plot_smooth_dist_intial_guess(self, q_gt=None, title1='Smoothed Distances and Peaks', title2='Initial Quaternion Components', plot_line=False):
 
         smoothed_dists = self.tomo.rotation_initial_dict['smoothed_distances'].cpu().numpy()
         peaks = self.tomo.rotation_initial_dict['peaks'].cpu().numpy()
@@ -646,7 +647,7 @@ class TomoPlotter:
         ax0 = plt.subplot(gs[0])
         ax0.plot(smoothed_dists)
         ax0.scatter(peaks, smoothed_dists[peaks], c='r', label="Peaks")
-        ax0.set_title("Smoothed Distances and Peaks")
+        ax0.set_title(title1)
         ax0.set_xlabel("Time Step")
         ax0.set_ylabel("Smoothed Distance")
         ax0.legend()
@@ -655,12 +656,15 @@ class TomoPlotter:
         q1 = self.tomo.rotation_initial_dict['quaternions'].cpu().numpy()
         for i in range(4):
             ax1.plot(q1[:, i], label=fr'$q_{i}$', linewidth=2)
-        ax1.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
+        if plot_line:
+            ax1.axvline(x=len(q1), color='black', linestyle='--', linewidth=3, label='End of q1')
 
         if q_gt is not None:
             for i in range(4):
                 ax1.plot(q_gt[:, i].cpu().numpy(), '--', label=fr'$q_{i}$ (GT)', linewidth=2)
-        ax1.set_title("Initial Guess vs. True Quaternion Components")
+        ax1.set_title(title2)
+        ax1.set_xlabel("Frame")
+        ax1.set_ylabel("Quaternion")
 
         ax1.legend()
         self._save_fig('combined_plot_wider')
@@ -723,9 +727,9 @@ class TomoPlotter:
             plt.plot(t_gt[:, 2], label='z-gt', linewidth=2)
         
         plt.legend()
-        plt.xlabel('Frame')
-        plt.ylabel('Translation')
-        plt.title('Translations over time')
+        plt.xlabel('Frame', fontsize=14)
+        plt.ylabel('Translation', fontsize=14)
+        plt.title('Translations over time', fontsize=16)
 
 
         self._save_fig(save_name)

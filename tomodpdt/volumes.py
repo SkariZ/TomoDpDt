@@ -83,6 +83,16 @@ def sample_positions_3D(num_points, area_size, min_distance, edge_margin=8):
 
     return np.array(positions).astype(int)
 
+def gaussian_blob_3D(size, center, sigma=2):
+    """Generate a 3D Gaussian blob centered at (x, y, z)."""
+    x0, y0, z0 = center
+    X = np.arange(size)
+    Y = np.arange(size)[:, None]
+    Z = np.arange(size)[:, None, None]
+
+    dist_sq = (X - x0)**2 + (Y - y0)**2 + (Z - z0)**2
+    return np.exp(-dist_sq / (2 * sigma**2))
+
 ### VOLUME 1 ###
 if RERUN:
     grid = np.zeros((SIZE, SIZE, SIZE))  # 3D grid
@@ -157,20 +167,19 @@ if RERUN:
     grid = np.zeros((SIZE, SIZE, SIZE))
 
     # Random points
-    num_points = 12
+    num_points = 10
 
     # Generate random positions with a minimum distance between them
     positions = sample_positions_3D(num_points, (SIZE, SIZE, SIZE), min_distance=SIZE//8)
 
     # add small gaussian blobs at random positions
-    for i in range(10):
-        x, y, z = positions[i]
-        blob = np.exp(-((x - np.arange(SIZE))**2 + (y - np.arange(SIZE)[:, None])**2 + (z - np.arange(SIZE)[:, None, None])**2) / (2 * 2**2))
-        grid += blob
+    for pos in positions:
+        grid += gaussian_blob_3D(SIZE, pos, sigma=2)
 
     grid /= grid.max()
 
     VOL_GAUSS_MULT = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
+    
 else:
     # Load the precomputed volume
     VOL_GAUSS_MULT = np.load('../test_data/vol_gauss_mult.npy')

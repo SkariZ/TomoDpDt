@@ -115,7 +115,7 @@ class ForwardModelSimple(nn.Module):
         """
         return torch.sum(volume, dim=self.dim)
 
-    def full_projection(self, volume: torch.Tensor, quaternions: torch.Tensor) -> torch.Tensor:
+    def full_projection(self, volume: torch.Tensor, quaternions: torch.Tensor, translations: torch.Tensor = None) -> torch.Tensor:
         """
         Compute projections for multiple quaternions.
         """
@@ -123,7 +123,7 @@ class ForwardModelSimple(nn.Module):
         projections = torch.zeros(len(quaternions), out_h, out_w, device=self.device)
 
         for i, q in enumerate(quaternions):
-            rotated_volume = self.apply_rotation(volume, q)
+            rotated_volume = self.apply_rotation_translation(volume, q, translations[i] if translations is not None else None)
             projections[i] = self.project(rotated_volume)
 
         return projections

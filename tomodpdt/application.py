@@ -171,8 +171,8 @@ class Tomography(dl.Application):
             'proj_loss': 2.0,
             'latent_loss': 0.1,
             'rtv_loss': 7.0,
-            'qv_loss': 0.0,
-            'q0_loss': 0.0,
+            'qv_loss': 0.2,
+            'q0_loss': 0.2,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
             'binarization_loss': 0.1  # Only used if microscopy_regime is fluorescence
@@ -254,7 +254,7 @@ class Tomography(dl.Application):
 
             self.smooth_startup_rotations = 400
             self.smooth_startup_translations = 800
-            self.sigma_update = 1.05
+            self.sigma_update = 1.04 # Fluorescence binarization sigma update factor
 
             x = torch.arange(self.nx) - self.nx / 2
             y = torch.arange(self.ny) - self.ny / 2
@@ -262,7 +262,7 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
 
             self.sigma = 0.4
-            self.n_spots = 20
+            self.n_spots = 15#20
 
             self.mesh = [
                 xx.to(self._device),
@@ -488,10 +488,10 @@ class Tomography(dl.Application):
         # -------------------------------------------------------
         # --- 10. Background correction initialization
         # -------------------------------------------------------
-        self.V0 = self.imaging_model(self.volume * 0).detach()
-        if self.V0.dtype == torch.complex64:
-            self.V0_phase = torch.median(torch.angle(self.V0))
-            self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
+        #self.V0 = self.imaging_model(self.volume * 0).detach()
+        #if self.V0.dtype == torch.complex64:
+        #    self.V0_phase = torch.median(torch.angle(self.V0))
+        #    self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
 
     def configure_optimizers(self):
         param_groups = []
@@ -732,8 +732,8 @@ class Tomography(dl.Application):
                 
                 # Handle two-channel complex projections
                 elif self.CH > 1 and estimated_projections.dtype == torch.complex64:
-                    estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)
-                    estimated_projections = estimated_projections - self.V0 + 1
+                    #estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)
+                    #estimated_projections = estimated_projections - self.V0 + 1
                     estimated_projections = torch.cat(
                         (estimated_projections.real, estimated_projections.imag), dim=-1
                     )
@@ -1176,10 +1176,12 @@ class Tomography(dl.Application):
             volume = torch.sum(torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
 
             # Clamp volume to [0, 1]
-            volume = torch.clamp(volume, 0, 1)
+            #volume = torch.clamp(volume, 0, 1)
+            # Scale volume to [0, 1]
+            volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-6)
 
             # Normalize volume to have a fixed total sum
-            #volume = volume / torch.sum(volume) #* self.n_spots / 2.0
+            # volume = volume / torch.sum(volume) #* self.n_spots / 2.0
 
             return volume
         else:

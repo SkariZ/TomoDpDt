@@ -54,14 +54,15 @@ def create_data(
         object = torch.tensor(volume, dtype=torch.float32, device=DEV)
     else:
         volume_dict = {
-            'gaussian': VOL_GAUSS,
+            'gaussian': VOL_GAUSS - 1.33,
             'fluorescence': VOL_FLUO,
-            'gaussian_multiple': VOL_GAUSS_MULT,
-            'shell': VOL_SHELL,
-            'random': VOL_RANDOM
+            'gaussian_multiple': VOL_GAUSS_MULT - 1.33,
+            'shell': VOL_SHELL - 1.33,
+            'random': VOL_RANDOM - 1.33
         }
         if volume_case not in volume_dict:
             raise ValueError(f'Unknown volume case: {volume_case}')
+        
         object = torch.tensor(volume_dict[volume_case], dtype=torch.float32, device=DEV)
 
     nx, ny, nz = object.shape  # Use actual dimensions
@@ -76,7 +77,8 @@ def create_data(
             'random_sinusoidal': R.generate_random_sinusoidal_quaternion,
             '1ax': R.generate_random_sinusoidal_quaternion,
             'smooth_varying': R.generate_smooth_varying_quaternion,
-            'smooth_varying_random': R.generate_smooth_varying_quaternion
+            'smooth_varying_random': R.generate_smooth_varying_quaternion,
+            'random_varying': R.generate_random_varying_quaternion
         }
         if rotation_case not in rotation_fn_dict:
             raise ValueError(f'Unknown rotation case: {rotation_case}')
@@ -140,8 +142,8 @@ def create_data(
             projections[i, 0] = image.cpu().squeeze()
             
         elif imaging_model.microscopy_regime == 'brightfield' and ch == 2:
-            image = image * torch.exp(-1j * V0_phase)
-            image = image - V0 + 1
+            #image = image * torch.exp(-1j * V0_phase)
+            #image = image - V0 + 1
             projections[i, 0] = image.real.cpu().squeeze()
             projections[i, 1] = image.imag.cpu().squeeze()
         else:
@@ -153,7 +155,7 @@ def create_data(
 if __name__ == '__main__':
 
     object, quaternions, projections, imaging_model = create_data(
-        image_modality='sum_projection', 
+        image_modality='brightfield', 
         rotation_case='random_sinusoidal', 
         samples=10,
         duration=0.1,
