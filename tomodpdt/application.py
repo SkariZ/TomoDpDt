@@ -270,7 +270,6 @@ class Tomography(dl.Application):
                 zz.to(self._device)
                 ]
 
-
     def initialize_parameters(self, projections, **kwargs):
         """
         Initialize model parameters:
@@ -1569,6 +1568,21 @@ class Tomography(dl.Application):
             w1*y2 - x1*z2 + y1*w2 + z1*x2,
             w1*z2 + x1*y2 - y1*x2 + z1*w2,
         ], dim=-1)
+    
+    def normalize_quaternions_to_identity(self, quats):
+    
+        q0 = quats[0]
+        q0_inv = torch.tensor([q0[0], -q0[1], -q0[2], -q0[3]])
+
+        quats_corrected = []
+        for q in quats:
+            w = q0_inv[0]*q[0] - q0_inv[1]*q[1] - q0_inv[2]*q[2] - q0_inv[3]*q[3]
+            x = q0_inv[0]*q[1] + q0_inv[1]*q[0] + q0_inv[2]*q[3] - q0_inv[3]*q[2]
+            y = q0_inv[0]*q[2] - q0_inv[1]*q[3] + q0_inv[2]*q[0] + q0_inv[3]*q[1]
+            z = q0_inv[0]*q[3] + q0_inv[1]*q[2] - q0_inv[2]*q[1] + q0_inv[3]*q[0]
+            quats_corrected.append(torch.tensor([w, x, y, z]))
+
+        return torch.stack(quats_corrected)
 
 # Testing the code
 if __name__ == "__main__":

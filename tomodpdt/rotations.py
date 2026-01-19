@@ -367,7 +367,33 @@ def generate_ou_quaternion(
 
     return Q
 
+def normalize_quaternions_to_identity(quats):
+    """
+    Adjusts a sequence of quaternions so that the first quaternion becomes [1, 0, 0, 0]
+    by left-multiplying all quaternions by the inverse of the first quaternion.
+    
+    Parameters
+    ----------
+    quats : np.ndarray
+        Array of shape (N, 4) containing quaternions [w, x, y, z].
+    
+    Returns
+    -------
+    np.ndarray
+        Corrected quaternions of shape (N, 4).
+    """
+    q0 = quats[0]
+    q0_inv = np.array([q0[0], -q0[1], -q0[2], -q0[3]])
 
+    quats_corrected = []
+    for q in quats:
+        w = q0_inv[0]*q[0] - q0_inv[1]*q[1] - q0_inv[2]*q[2] - q0_inv[3]*q[3]
+        x = q0_inv[0]*q[1] + q0_inv[1]*q[0] + q0_inv[2]*q[3] - q0_inv[3]*q[2]
+        y = q0_inv[0]*q[2] - q0_inv[1]*q[3] + q0_inv[2]*q[0] + q0_inv[3]*q[1]
+        z = q0_inv[0]*q[3] + q0_inv[1]*q[2] - q0_inv[2]*q[1] + q0_inv[3]*q[0]
+        quats_corrected.append([w, x, y, z])
+
+    return np.array(quats_corrected)
 
 def compute_optical_flow(frames):
     """
