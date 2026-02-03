@@ -4,7 +4,7 @@ import torch.nn.functional as F
 
 try:
     import tomodpdt.image_modalities_dt as dt
-except:
+except Exception:
     import image_modalities_dt as dt
 
 import deeptrack
@@ -13,160 +13,267 @@ from deeptrack.aberrations import SphericalAberration
 
 
 def setup_optics(
-        shape=None,
-        nsize=None,
-        padding_xy=64,
-        microscopy_regime='Brightfield',
-        NA=0.7,
-        wavelength=532e-9,
-        resolution=100e-9,
-        magnification=1,
-        return_field=True):
+    shape=None,
+    nsize=None,
+    padding_xy=64,
+    microscopy_regime="brightfield",
+    NA=0.7,
+    wavelength=532e-9,
+    resolution=100e-9,
+    magnification=1,
+    return_field=True,
+    **optics_kwargs,
+):
     """
-    Set up optical system for arbitrary 3D volume with metadata using (nx, ny, nz) order.
+    Build a DeepTrack optics object + metadata.
+
+    Parameters
+    ----------
+    shape : tuple[int,int,int] or None
+        (nz, ny, nx) OR (nx, ny, nz)?  -> we standardize internally to (nx, ny, nz) metadata.
+        In this file we keep the *metadata* as (nx, ny, nz) for consistency with DeepTrack limits.
+    nsize : int or None
+        Cubic volume size if shape is None.
+    padding_xy : int
+        Pad x/y before forward model evaluation.
+    microscopy_regime : str
+        "brightfield", "fluorescence", "darkfield", "iscat"
+    NA, wavelength, resolution, magnification, return_field : floats/bool
+        Standard optics parameters.
+    optics_kwargs : dict
+        Extra keyword args passed into the dt.<Modality>(...) constructor, e.g.
+        refractive_index_medium=..., pupil=..., illumination=..., etc.
+
+    Returns
+    -------
+    dict with keys: microscopy_regime, optics, limits, fields, filtered_properties, padding_xy, resolution, shape
     """
     microscopy_regime = microscopy_regime.lower()
 
-    # Determine shape
+    # Determine shape (metadata as nx, ny, nz)
     if shape is not None:
         if len(shape) != 3:
-            raise ValueError("`shape` must be (nx, ny, nz)")
-        nx, ny, nz = shape
+            raise ValueError("`shape` must be length-3.")
+
+        # Your volumes are usually (nz, ny, nx) tensors.
+        # Here we accept either convention and try to infer it.
+        # Heuristic: if you pass a torch tensor shape from obj (nz,ny,nx), treat it as such.
+        # If you pass a tuple intended as (nx,ny,nz), you can override by passing shape_order="nxnyz".
+        shape_order = optics_kwargs.pop("shape_order", "nznyx")  # default to your internal tensor layout
+        if shape_order == "nznyx":
+            nz, ny, nx = map(int, shape)
+        elif shape_order == "nxnyz":
+            nx, ny, nz = map(int, shape)
+        else:
+            raise ValueError("shape_order must be 'nznyx' or 'nxnyz'.")
     elif nsize is not None:
         nx = ny = nz = int(nsize)
     else:
-        raise ValueError("Provide either `shape` or `nsize`")
+        raise ValueError("Provide either `shape` or `nsize`.")
 
-    # Padded sizes
-    padded_nx = nx + 2 * padding_xy
-    padded_ny = ny + 2 * padding_xy
-    padded_nz = nz  # do not pad z
+    # Padded sizes (pad x/y only)
+    padded_nx = nx + 2 * int(padding_xy)
+    padded_ny = ny + 2 * int(padding_xy)
 
-    # Define optics
-    if microscopy_regime == 'brightfield':
+    # Default pupil for fluorescence if none provided
+    if microscopy_regime == "fluorescence":
+        optics_kwargs.setdefault("pupil", SphericalAberration())
+        return_field = False  # fluorescence returns intensity-like output in your dt wrapper
+
+    # Build optics (pass through additional kwargs)
+    if microscopy_regime == "brightfield":
         optics = dt.Brightfield(
             NA=NA,
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
             output_region=(0, 0, padded_nx, padded_ny),
-            return_field=return_field
+            return_field=return_field,
+            **optics_kwargs,
         )
-    elif microscopy_regime == 'fluorescence':
+    elif microscopy_regime == "fluorescence":
         optics = dt.Fluorescence(
             NA=NA,
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
             output_region=(0, 0, padded_nx, padded_ny),
-            pupil=SphericalAberration()
+            **optics_kwargs,
         )
-        return_field = False
-    elif microscopy_regime == 'darkfield':
+    elif microscopy_regime == "darkfield":
         optics = dt.Darkfield(
             NA=NA,
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
-            output_region=(0, 0, padded_nx, padded_ny)
+            output_region=(0, 0, padded_nx, padded_ny),
+            **optics_kwargs,
         )
         return_field = False
-    elif microscopy_regime == 'iscat':
+    elif microscopy_regime == "iscat":
         optics = dt.ISCAT(
             NA=NA,
             wavelength=wavelength,
             resolution=resolution,
             magnification=magnification,
             output_region=(0, 0, padded_nx, padded_ny),
-            return_field=return_field
+            return_field=return_field,
+            **optics_kwargs,
         )
     else:
         raise ValueError(f"Unknown microscopy_regime: {microscopy_regime}")
 
-    # Limits in (x, y, z) order
-    limits = torch.tensor([
-        [0, padded_nx],
-        [0, padded_ny],
-        [-nz / 2, nz / 2]
-    ], dtype=torch.float32)
+    # Limits in (x, y, z) order expected by your dt optics
+    limits = torch.tensor(
+        [[0, padded_nx], [0, padded_ny], [-nz / 2, nz / 2]],
+        dtype=torch.float32,
+    )
 
-    # Precompute fields
+    # Precompute fields (for coherent modalities)
     padded_xy_for_fft = 2 * ((max(padded_nx, padded_ny) + 31) // 32) * 32
     fields = torch.ones((padded_xy_for_fft, padded_xy_for_fft), dtype=torch.complex64)
 
-    # Filtered properties
+    # Filtered properties passed into optics.get(...)
+    # Keep it permissive: only include keys that actually exist.
     properties = optics.properties()
-    filtered_properties = {
-        k: v for k, v in properties.items()
-        if k in {'padding', 'output_region', 'NA', 'wavelength', 'refractive_index_medium', 'return_field'}
-    }
+    allow = {"padding", "output_region", "NA", "wavelength", "refractive_index_medium", "return_field"}
+    filtered_properties = {k: v for k, v in properties.items() if k in allow}
+
+    # Ensure return_field is aligned with what we requested (some optics may expose it)
+    filtered_properties["return_field"] = return_field if "return_field" in allow else return_field
 
     return {
-        'microscopy_regime': microscopy_regime,
-        'optics': optics,
-        'limits': limits,
-        'fields': fields,
-        'filtered_properties': filtered_properties,
-        'padding_xy': padding_xy,
-        'resolution': resolution,
-        'shape': (nx, ny, nz),  # consistent with limits
+        "microscopy_regime": microscopy_regime,
+        "optics": optics,
+        "limits": limits,
+        "fields": fields,
+        "filtered_properties": filtered_properties,
+        "padding_xy": int(padding_xy),
+        "resolution": float(resolution),
+        # store metadata as (nx, ny, nz)
+        "shape": (nx, ny, nz),
     }
 
 
 class imaging_model(nn.Module):
     """
-    Imaging model using DeepTrack, fully consistent with (nx, ny, nz) metadata.
-    Input volumes are still (nz, ny, nx) internally.
+    Torch wrapper around DeepTrack optics.
+
+    Input volumes are expected as torch tensors in (nz, ny, nx) layout (your internal convention).
     """
 
-    def __init__(self, optics_setup):
+    def __init__(
+        self,
+        optics_setup: dict,
+        device: torch.device | None = None,
+        forward_case: str | None = None,
+        padding_value: float = 0.0,
+        fluorescence_eps: float = 1e-12,
+        lazy_background: bool = True,
+    ):
         super().__init__()
-        self.microscopy_regime = optics_setup['microscopy_regime'].lower()
-        self.optics = optics_setup['optics']
-        self.limits = optics_setup['limits']
-        self.fields = optics_setup['fields']
-        self.filtered_properties = optics_setup['filtered_properties']
-        self.padding_xy = int(optics_setup['padding_xy'])
-        self.resolution = optics_setup['resolution']
-        self.nx, self.ny, self.nz = optics_setup['shape']  # metadata
 
-        self.device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
+        self.microscopy_regime = optics_setup["microscopy_regime"].lower()
+        self.optics = optics_setup["optics"]
+        self.limits = optics_setup["limits"]
+        self.fields = optics_setup["fields"]
+        self.filtered_properties = optics_setup["filtered_properties"]
+        self.padding_xy = int(optics_setup["padding_xy"])
+        self.resolution = float(optics_setup["resolution"])
+        self.nx, self.ny, self.nz = optics_setup["shape"]  # metadata (nx,ny,nz)
 
-        self.padding_value = 0.0
-        self.forward_case = 'vmap' if self.microscopy_regime != 'fluorescence' else 'loop'
+        self.device = device or (torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu"))
+        self.padding_value = float(padding_value)
 
-        if self.microscopy_regime == 'brightfield':
-            self.V0 = self.pass_empty_forward(torch.zeros((self.nz, self.ny, self.nx), dtype=torch.float32, device=self.device))
-            self.V0_phase = torch.median(torch.angle(self.V0)).to(self.device)
+        # Forward strategy
+        if forward_case is None:
+            # fluorescence: loop is most reliable (and you saw it faster)
+            self.forward_case = "loop" if self.microscopy_regime == "fluorescence" else "vmap"
+        else:
+            self.forward_case = forward_case
+
+        # Brightfield background correction computed lazily
+        self._lazy_background = bool(lazy_background)
+        self.V0 = None
+        self.V0_phase = None
+
+        # Fluorescence baseline subtraction to avoid "all-zero" pathology
+        self._fluor_eps = float(fluorescence_eps)
+        self._fluor_baseline = None
+
+    def _ensure_device_buffers(self, device):
+        self.limits = self.limits.to(device)
+        self.fields = self.fields.to(device)
+
+    def _compute_brightfield_background(self, device):
+        # Compute V0 and phase correction once (no grad)
+        with torch.no_grad():
+            empty = torch.zeros((self.nz, self.ny, self.nx), dtype=torch.float32, device=device)
+            img = self._imaging_step_core(empty)  # already cropped, raw field
+            self.V0 = img
+            self.V0_phase = torch.median(torch.angle(self.V0))
             self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
 
-    def forward(self, obj, vmap=True):
-        self.limits = self.limits.to(obj.device)
-        self.fields = self.fields.to(obj.device)
+    def forward(self, obj, vmap: bool = True):
+        self._ensure_device_buffers(obj.device)
 
         # single volume
         if obj.dim() == 3:
             return self.imaging_step(obj)
 
-        # single volume with batch dim 1
+        # batch dim 1
         if obj.dim() == 4 and obj.size(0) == 1:
             return self.imaging_step(obj.squeeze(0)).unsqueeze(0)
 
-        # batch processing
-        if self.forward_case == 'vmap' and vmap:
-            imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
-            return imaging_vmap(obj)
-        else:
-            return torch.stack([self.imaging_step(sample) for sample in obj])
-        
-    def pass_empty_forward(self, obj):
-        # Pass a volume of zeros through the model to get the "background image"
-        return self.imaging_step(obj)
+        # batch
+        if obj.dim() == 4:
+            if self.microscopy_regime == "fluorescence":
+                # Explicit loop is fastest/most reliable (your benchmark confirmed)
+                return torch.stack([self.imaging_step(obj[i]) for i in range(obj.shape[0])], dim=0)
 
+            if self.forward_case == "vmap" and vmap:
+                imaging_vmap = torch.vmap(self.imaging_step, in_dims=0)
+                return imaging_vmap(obj)
 
-    def imaging_step(self, obj):
-        obj = obj.to(self.device)
+            return torch.stack([self.imaging_step(sample) for sample in obj], dim=0)
 
+        raise ValueError(f"Expected obj dim 3 or 4, got {obj.dim()}")
+
+    def imaging_step(self, obj: torch.Tensor):
+        """
+        Full imaging step including background/baseline corrections.
+        Input: (nz, ny, nx)
+        Output: typically (ny, nx, 1) or complex field thereof
+        """
+        obj = obj.to(device=self.device)
+
+        # lazily compute brightfield background
+        if self.microscopy_regime == "brightfield" and self._lazy_background and self.V0 is None:
+            self._compute_brightfield_background(device=obj.device)
+
+        out = self._imaging_step_core(obj)
+
+        # brightfield background correction
+        if self.microscopy_regime == "brightfield" and self.V0 is not None:
+            out = out * torch.exp(-1j * self.V0_phase)
+            out = out - self.V0 + 1
+
+        # fluorescence baseline subtraction (avoids all-zero hack)
+        if self.microscopy_regime == "fluorescence":
+            if self._fluor_baseline is None or self._fluor_baseline.device != out.device:
+                with torch.no_grad():
+                    empty = torch.zeros_like(obj)
+                    base = self._imaging_step_core(empty + self._fluor_eps)
+                    self._fluor_baseline = base.detach()
+            out = out - self._fluor_baseline
+
+        return out
+
+    def _imaging_step_core(self, obj: torch.Tensor):
+        """
+        Core DeepTrack call + padding/cropping.
+        No background subtraction here; returns raw optics output as torch tensor.
+        """
         with deeptrack.units.context(
             create_context(
                 xpixel=self.resolution,
@@ -177,42 +284,27 @@ class imaging_model(nn.Module):
                 zscale=1,
             )
         ):
-
-            # pad x/y if needed
+            # pad x/y if needed (obj is nz,ny,nx; convert to nx,ny,nz for padding)
             if self.padding_xy > 0:
                 obj = F.pad(
                     obj.permute(2, 1, 0),  # (nx, ny, nz)
                     (0, 0, self.padding_xy, self.padding_xy, self.padding_xy, self.padding_xy),
-                    mode='constant', value=self.padding_value
-                ).permute(2, 1, 0)
+                    mode="constant",
+                    value=self.padding_value,
+                ).permute(2, 1, 0)  # back to (nz, ny, nx)
 
-            # brightfield, darkfield, iscat
-            if self.microscopy_regime in {'brightfield', 'darkfield', 'iscat'}:
+            # optics call
+            if self.microscopy_regime in {"brightfield", "darkfield", "iscat"}:
                 image = self.optics.get(obj, self.limits, self.fields, **self.filtered_properties)
-
-            # fluorescence
-            elif self.microscopy_regime == 'fluorescence':
-                if obj.sum() == 0:
-                    c1, c2, c3 = obj.shape
-                    # center voxel (compute dynamically)
-                    cz = c1 // 2
-                    cy = c2 // 2
-                    cx = c3 // 2
-                    obj = obj.clone()
-                    obj[cz, cy, cx] = 1e-7
-                image = self.optics.get(obj, self.limits, **self.filtered_properties)
+            elif self.microscopy_regime == "fluorescence":
+                # add tiny epsilon everywhere, then subtract baseline in imaging_step()
+                image = self.optics.get(obj + self._fluor_eps, self.limits, **self.filtered_properties)
             else:
-                raise ValueError('Unknown microscopy regime')
+                raise ValueError(f"Unknown microscopy regime: {self.microscopy_regime}")
 
-        # remove padding
+        # crop out padding in xy
         if self.padding_xy > 0:
-            image = image[self.padding_xy:-self.padding_xy, self.padding_xy:-self.padding_xy]
-
-        # Correct phase for brightfield
-        if self.microscopy_regime == 'brightfield' and getattr(self, 'V0', None) is not None:
-
-            image = image * torch.exp(-1j * self.V0_phase)
-            image = image - self.V0 + 1
+            image = image[self.padding_xy : -self.padding_xy, self.padding_xy : -self.padding_xy]
 
         return image._value
 
@@ -331,69 +423,103 @@ class PropagationImagingModel(nn.Module):
         return E * phase_term
 
 
+import time
+import numpy as np
+import torch
+
+def make_batch(vol_a: torch.Tensor, vol_b: torch.Tensor | None = None, n_a=8, n_b=8):
+    vols = [vol_a for _ in range(n_a)]
+    if vol_b is not None:
+        vols += [vol_b for _ in range(n_b)]
+    batch = torch.stack(vols, dim=0)  # (B, Z, Y, X)
+    return batch
+
+@torch.no_grad()
+def time_loop(model, batch):
+    # loop over batch with detach (forward only)
+    start = time.time()
+    for v in batch:
+        _ = model(v)
+    return time.time() - start
+
+def test_model(microscopy_regime: str,
+               vol_a: torch.Tensor,
+               vol_b: torch.Tensor | None = None,
+               padding_xy=64,
+               return_field=True,
+               device=None):
+
+    device = device or torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    vol_a = vol_a.to(device=device, dtype=torch.float32)
+    vol_b = vol_b.to(device=device, dtype=torch.float32) if vol_b is not None else None
+
+    # Setup optics to match actual volume shape (Z,Y,X)
+    optics_setup = setup_optics(shape=tuple(vol_a.shape), padding_xy=padding_xy,
+                                microscopy_regime=microscopy_regime, return_field=return_field)
+    model = imaging_model(optics_setup).to(device).eval()
+
+    # Build batch as a LEAF tensor so gradients accumulate here
+    batch = make_batch(vol_a, vol_b, n_a=8, n_b=(8 if vol_b is not None else 0))
+    batch = batch.detach().clone().requires_grad_(True)   # ensure leaf
+
+    # --- Batched forward timing ---
+    start = time.time()
+    out = model(batch)   # expect (B,H,W) or (B,H,W,1) depending on your optics wrapper
+    t_batch = time.time() - start
+
+    # --- Scalar loss + backward ---
+    # Use a loss that works for both real and complex outputs
+    if torch.is_complex(out):
+        loss = (out.real**2 + out.imag**2).mean()
+    else:
+        loss = (out**2).mean()
+
+    loss.backward()
+
+    # --- Grad checks (CHECK INPUT grads, not output grads) ---
+    grad = batch.grad
+    grad_ok = (grad is not None) and torch.isfinite(grad).all().item() and (grad.abs().max().item() > 0)
+
+    print(f"\n=== {microscopy_regime.upper()} ===")
+    print("device:", device)
+    print("batch.shape:", tuple(batch.shape))
+    print("out.shape:", tuple(out.shape))
+    print("out.dtype:", out.dtype, "| complex?", torch.is_complex(out))
+    print("batch forward time:", t_batch)
+    print("loss:", float(loss.detach().cpu()))
+    print("batch.grad is None?", grad is None)
+    if grad is not None:
+        print("grad mean abs:", grad.abs().mean().item())
+        print("grad max abs:", grad.abs().max().item())
+        print("grad finite:", torch.isfinite(grad).all().item())
+    print("✅ gradients OK" if grad_ok else "❌ gradients NOT OK")
+
+    # --- Optional: timing loop mode ---
+    t_loop = time_loop(model, batch.detach())
+    print("loop forward time:", t_loop)
+
+    return model, out.detach(), batch.grad.detach() if batch.grad is not None else None
+
+
 if __name__ == "__main__":
-    import numpy as np
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+    # Load your test volume(s)
+    vol_a = np.load("../test_data/vol_gauss_mult.npy") - 1.33
+    vol_b = np.load("../test_data/vol_gauss_mult.npy") - 1.33
 
-    optics_setup = setup_optics(nsize=64, padding_xy=64, microscopy_regime='fluorescence')
-    im_model = imaging_model(optics_setup)
+    vol_a = torch.tensor(vol_a, device=device)
+    vol_b = torch.tensor(vol_b, device=device)
 
-    
-    object2 = np.load('../test_data/vol_gauss_mult.npy') - 1.33
-    object = np.load('../test_data/vol_gauss_mult.npy') - 1.33   
-    object = torch.tensor(object).to('cuda')
-    object2 = torch.tensor(object2).to('cuda')
+    # same cropping you did
+    vol_a = vol_a[8:, 16:, :]
+    vol_b = vol_b[8:, 16:, :]
 
-    object = object[8:, 16:, :]
-    object2 = object2[8:, 16:, :]
+    # Brightfield test
+    test_model("brightfield", vol_a, vol_b, padding_xy=64, return_field=True, device=device)
 
-    optics_setup = setup_optics(shape=object.shape, padding_xy=64, microscopy_regime='brightfield')
-    im_model = imaging_model(optics_setup)
-
-    # Add random noise
-    object_8 = torch.stack([object for _ in range(8)]+[object2 for _ in range(8)])
-    
-    import time
-
-    #Track gradient
-    object_8.requires_grad = True
-    
-    start = time.time()
-    image16 = im_model(object_8)
-    print('Time taken:', time.time() - start)
-
-    #Check gradient
-    image16.real.sum().backward()
-    #print('Gradient:', object_16.grad)
-
-    start = time.time()
-    for object in object_8:
-        image = im_model(object).detach()
-    print('Time taken:', time.time() - start)
-
-    if image.device.type == 'cuda':
-        image = image.cpu()
-
-    
-    try:
-        import matplotlib.pyplot as plt
-
-        im = image.imag
-        plt.figure(figsize=(6, 6))
-        plt.title('Imaginary part')
-        plt.imshow(im)
-        plt.colorbar()
-        plt.show()
-    except:
-        pass
-
-    try:
-        im = image.real
-        plt.figure(figsize=(6, 6))
-        plt.title('Real part')
-        plt.imshow(im)
-        plt.colorbar()
-        plt.show()
-    except AttributeError:
-        pass
-
+    # Fluorescence test (if you have a fluorescence volume, pass it here)
+    # Example: fluorescence volume should be nonnegative, sparse-ish
+    fluor = torch.tensor(np.load("../test_data/vol_fluo.npy"), device=device)
+    fluor = fluor[8:, 16:, :]
+    test_model("fluorescence", fluor, None, padding_xy=64, return_field=False, device=device)

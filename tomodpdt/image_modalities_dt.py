@@ -26,6 +26,9 @@ import numpy as np
 import torch
 
 
+import functools
+import hashlib
+
 _FASTEST_SIZES = [0]
 for n in range(1, 10):
     _FASTEST_SIZES += [2 ** a * 3 ** (n - a - 1) for a in range(n)]
@@ -90,135 +93,209 @@ def pad_image_to_fft(
     
     return padded_image
 
-
 class Optics(OriginalOptics):
-    """
-    A class that represents the optics of a microscope.
-    Inherits from the original Optics class in deeptrack.
-    """
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
-        self._name = "Optics"  # Set the name of the optics to "Optics"
-        self._description = "Optics of the microscope"  # Set the description of the optics
+        self._name = "Optics"
+        self._description = "Optics of the microscope"
+        # --- caches ---
+        self._pupil_cache = {}     # key -> complex tensor (Z,H,W) or (H,W)
+        self._fftshift_cache = {}  # key -> fftshifted pupil
+        self._otf_cache = {}       # key -> OTF tensor (complex64)
 
+    @staticmethod
+    def _tensor_key(x: torch.Tensor, max_len: int = 256):
+        """
+        Create a small hashable key for a tensor contents (used for z-values).
+        We only use CPU float32 and round to reduce key explosion.
+        """
+        if x is None:
+            return None
+        x = x.detach().float().cpu()
+        if x.numel() > max_len:
+            # downsample key if huge (rare)
+            idx = torch.linspace(0, x.numel() - 1, max_len).long()
+            x = x.flatten()[idx]
+        x = torch.round(x * 1e6) / 1e6  # quantize a bit
+        return tuple(x.flatten().tolist())
+
+    def _safe_get_pupil(self):
+        """Safely retrieve pupil without triggering DeepTrack Feature __getattr__ crash."""
+        try:
+            return getattr(self, "pupil")
+        except Exception:
+            # If DeepTrack intercepts attribute access and fails, treat as no pupil/aberration
+            return None
+
+    def _cached_pupil_tensor(
+        self,
+        shape_hw,
+        NA,
+        wavelength,
+        refractive_index_medium,
+        include_aberration: bool,
+        defocus,
+        device,
+        **kwargs
+    ) -> torch.Tensor:
+        """
+        Cached wrapper around _pupil_tensor.
+        Returns: tensor of shape (Z,H,W) complex64
+        """
+        H, W = int(shape_hw[0]), int(shape_hw[1])
+
+        # normalize defocus into a tensor on CPU for key
+        if isinstance(defocus, (list, tuple)):
+            defocus_t = torch.tensor(defocus, dtype=torch.float32)
+        elif isinstance(defocus, torch.Tensor):
+            defocus_t = defocus.detach().float().cpu()
+        else:
+            defocus_t = torch.tensor([float(defocus)], dtype=torch.float32)
+
+        try:
+            pupil_obj = getattr(self, "pupil")
+        except Exception:
+            pupil_obj = None
+
+        pupil_id = "none" if pupil_obj is None else f"{type(pupil_obj).__name__}:{id(pupil_obj)}"
+
+        key = (
+            "pupil",
+            H, W,
+            float(NA), float(wavelength), float(refractive_index_medium),
+            bool(include_aberration),
+            self._tensor_key(defocus_t),
+            # include pupil identity if Feature is used
+            pupil_id,
+        )
+
+        # prevent accidental duplicates if caller passes NA etc inside kwargs
+        kwargs = dict(kwargs)
+        for k in ["NA", "wavelength", "refractive_index_medium", "defocus", "include_aberration", "device"]:
+            kwargs.pop(k, None)
+
+        out = self._pupil_cache.get(key, None)
+        if out is None or out.device != device:
+            out = self._pupil_tensor(
+                shape=(H, W),
+                NA=NA,
+                wavelength=wavelength,
+                refractive_index_medium=refractive_index_medium,
+                include_aberration=include_aberration,
+                defocus=defocus_t.to(device),
+                device=device,
+                **kwargs
+            ).to(torch.complex64)
+            self._pupil_cache[key] = out
+        return out
+    
     def _pupil_tensor(
-            self:  'Optics',
-            shape: ArrayLike[int],
-            NA: float,
-            wavelength: float,
-            refractive_index_medium: float,
-            include_aberration: bool = True,   
-            defocus: Union[float, ArrayLike[float]] = 0,
-            **kwargs: Dict[str, Any],
-        ):
-            """Calculates the pupil function at different focal points.
+        self: "Optics",
+        shape,
+        NA: float,
+        wavelength: float,
+        refractive_index_medium: float,
+        include_aberration: bool = True,
+        defocus=0,
+        **kwargs,
+    ):
+        """
+        Torch implementation of pupil function with safe aberration handling.
 
-            Parameters
-            ----------
-            shape: array_like[int, int]
-                The shape of the pupil function.
-            NA: float
-                The NA of the limiting aperture.
-            wavelength: float
-                The wavelength of the scattered light in meters.
-            refractive_index_medium: float
-                The refractive index of the medium.
-            voxel_size: array_like[float (, float, float)]
-                The distance between pixels in the camera. A third value can be
-                included to define the resolution in the z-direction.
-            include_aberration: bool
-                If True, the aberration is included in the pupil function.
-            defocus: float or list[float]
-                The defocus of the system. If a list is given, the pupil is
-                calculated for each focal point. Defocus is given in meters.
+        - Works even if `self.pupil` is missing (DeepTrack Feature __getattr__ trap).
+        - Supports `self.pupil` as deeptrack Feature, numpy array, torch tensor, or None.
+        - Returns tensor of shape (Z, H, W) complex64.
+        """
 
-            Returns
-            -------
-            pupil: array_like[complex]
-                The pupil function. Shape is (z, y, x).
+        # Device
+        device = kwargs.get("device", torch.device("cuda" if torch.cuda.is_available() else "cpu"))
 
-            Examples
-            --------
-            Calculating the pupil function:
+        # Active voxel size from deeptrack context
+        voxel_size = get_active_voxel_size()  # (dx, dy, dz) in meters
 
-            >>> import deeptrack as dt
+        # Normalize shape to (H, W)
+        if isinstance(shape, torch.Tensor):
+            H, W = int(shape[0].item()), int(shape[1].item())
+        else:
+            H, W = int(shape[0]), int(shape[1])
 
-            >>> optics = dt.Optics()
-            >>> pupil = optics._pupil(
-            ...     shape=(128, 128),
-            ...     NA=0.8,
-            ...     wavelength=0.55e-6,
-            ...     refractive_index_medium=1.33,
-            ... )
-            >>> print(pupil.shape)
-            (1, 128, 128)
-            
-            """
+        # Radius scaling
+        # R = NA / wavelength * voxel_size[:2]
+        # x_radius = R[0] * H, y_radius = R[1] * W
+        # Keep consistent with your original code:
+        R = (NA / wavelength) * torch.tensor(voxel_size, device=device)[:2]
+        x_radius = R[0] * H
+        y_radius = R[1] * W
 
-            # if device is in kwargs set it
-            if 'device' in kwargs:
-                device = kwargs['device']
-            else:
-                device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Coordinates in pupil plane
+        x = (torch.linspace(-(H / 2), H / 2 - 1, H, device=device) / x_radius) + 1e-8
+        y = (torch.linspace(-(W / 2), W / 2 - 1, W, device=device) / y_radius) + 1e-8
+        Wg, Hg = torch.meshgrid(x, y, indexing="ij")
+        RHO = (Wg**2 + Hg**2)
 
-            # Calculates the pupil at each z-position in defocus.
-            voxel_size = get_active_voxel_size()
-            shape = torch.tensor(shape)
+        # Base pupil (unit disk)
+        pupil_function = (RHO < 1).to(torch.complex64)
 
-            # Pupil radius
-            R = NA / wavelength * torch.tensor(voxel_size)[:2]
+        # z phase shift kernel (complex), shape (H,W)
+        z_shift = (
+            2
+            * torch.pi
+            * refractive_index_medium
+            / wavelength
+            * voxel_size[2]
+            * torch.sqrt(1 - (NA / refractive_index_medium) ** 2 * RHO)
+        ).to(torch.complex64)
 
-            x_radius = R[0] * shape[0]
-            y_radius = R[1] * shape[1]
+        # Clean invalid values
+        # sqrt can yield nan for RHO outside range; also handle imaginary
+        z_shift = torch.nan_to_num(z_shift.real, nan=0.0).to(torch.complex64)
 
-            x = (torch.linspace(-(shape[0] / 2), shape[0] / 2 - 1, shape[0])) / x_radius + 1e-8
-            y = (torch.linspace(-(shape[1] / 2), shape[1] / 2 - 1, shape[1])) / y_radius + 1e-8
+        # Normalize defocus to tensor shape (Z,1,1)
+        if isinstance(defocus, (list, tuple)):
+            defocus_t = torch.tensor(defocus, dtype=torch.float32, device=device)
+        elif isinstance(defocus, torch.Tensor):
+            defocus_t = defocus.to(device=device, dtype=torch.float32)
+        else:
+            defocus_t = torch.tensor([float(defocus)], dtype=torch.float32, device=device)
 
-            W, H = torch.meshgrid(x, y, indexing='ij')
-            W = W.to(device)
-            H = H.to(device)
-            RHO = (W ** 2 + H ** 2)
-            pupil_function = Image((RHO < 1) + 0.0j, copy=False)
+        defocus_t = defocus_t.reshape(-1, 1, 1)  # (Z,1,1)
 
-            # Defocus
-            z_shift = Image(
-                2
-                * torch.pi
-                * refractive_index_medium
-                / wavelength
-                * voxel_size[2]
-                * torch.sqrt(1 - (NA / refractive_index_medium) ** 2 * RHO)+0j,
-                copy=False,
-            )
-
-            z_shift._value[z_shift._value.imag != 0] = 0
+        # --- Safe aberration handling (NO direct self.pupil access) ---
+        if include_aberration:
             try:
-                z_shift = torch.nan_to_num(z_shift._value, nan=0.0, posinf=None, neginf=None)
-            except TypeError:
-                torch.nan_to_num(z_shift, z_shift)
+                pupil_obj = getattr(self, "pupil")
+            except Exception:
+                pupil_obj = None
 
-            # Ensure defocus is a list of tensors or numbers
-            if isinstance(defocus, list):
-                # Convert each element to CPU and NumPy if it's a tensor
-                defocus = torch.tensor(defocus)
-    
-            defocus = torch.reshape(defocus, (-1, 1, 1)).to(device)
-            z_shift = defocus * z_shift.unsqueeze(0)
-            
-            if include_aberration:
-                pupil = self.pupil
+            if pupil_obj is not None:
+                # Feature pupil (runs in numpy)
+                if isinstance(pupil_obj, Feature):
+                    # pupil_function is complex; Feature likely expects numpy array
+                    pf_np = pupil_function.detach().cpu().numpy()
+                    pupil_np = pupil_obj(pf_np)
+                    pupil_t = torch.as_tensor(pupil_np, dtype=torch.complex64, device=device)
+                    pupil_function = pupil_function * pupil_t
 
-                if isinstance(pupil, Feature):
-                    pupil_function = pupil(pupil_function.cpu().numpy())
-                    pupil_function = torch.tensor(pupil_function).to(device)
+                # numpy array pupil
+                elif isinstance(pupil_obj, np.ndarray):
+                    pupil_t = torch.as_tensor(pupil_obj, dtype=torch.complex64, device=device)
+                    pupil_function = pupil_function * pupil_t
 
-                elif isinstance(pupil, np.ndarray):
-                    pupil_function *= torch.tensor(pupil).to(device)
+                # torch tensor pupil
+                elif isinstance(pupil_obj, torch.Tensor):
+                    pupil_function = pupil_function * pupil_obj.to(device=device, dtype=torch.complex64)
 
-            pupil_functions = pupil_function * torch.exp(1j * z_shift)
+                # unsupported type -> ignore
+                else:
+                    pass
 
-            return pupil_functions 
-    
+        # Broadcast: pupil_function (H,W) with defocus phase (Z,H,W)
+        # exp(i * defocus * z_shift)
+        phase = torch.exp(1j * defocus_t.to(torch.complex64) * z_shift.unsqueeze(0))
+        pupil_functions = pupil_function.unsqueeze(0) * phase  # (Z,H,W)
+
+        return pupil_functions
+
     def _pad_volume_tensor(
         self: 'Optics',
         volume: torch.Tensor,
@@ -467,54 +544,82 @@ class Fluorescence(Optics):
             z_limits[0],
             z_limits[1],
             padded_volume.shape[2],
-            ).to(padded_volume.device)
+            device=padded_volume.device,
+        )
 
-        zero_plane = torch.all(padded_volume < 1e-8, axis=(0, 1), keepdims=False)
-        z_values = torch.masked_select(z_iterator, ~zero_plane)
-        
+        # Planes that are effectively empty (fast skip)
+        zero_plane = torch.all(padded_volume < 1e-10, dim=(0, 1))
+        z_values = z_iterator[~zero_plane]
+
+        # If everything is empty, return zeros immediately
+        if z_values.numel() == 0:
+            output_image = Image(torch.zeros((*padded_volume.shape[0:2], 1), device=padded_volume.device))
+            output_image = output_image[pad[0]: -pad[2], pad[1]: -pad[3]]
+            output_image.properties = Image(illuminated_volume).properties
+            return output_image
+
+        # Pad to FFT-friendly size (Hfft, Wfft, Z)
         volume = pad_image_to_fft(padded_volume, axes=(0, 1))
+        Hfft, Wfft = int(volume.shape[0]), int(volume.shape[1])
 
-        #voxel_size = get_active_voxel_size()
-
-        #pupils = self._pupil(
-        #    volume.shape[:2], defocus=z_values, include_aberration=False, **kwargs
-        #    )
-
+        # Compute pupils for the *active* planes only (Z_active, Hfft, Wfft)
+        # IMPORTANT: _pupil_tensor already returns torch tensors -> don't re-wrap with torch.tensor(...)
         pupils = self._pupil_tensor(
-            volume.shape[:2], defocus=z_values, include_aberration=False, device=volume.device, **kwargs
-            )
-                
-        pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
-        
+            volume.shape[:2],
+            defocus=z_values,
+            include_aberration=False,
+            device=volume.device,
+            **kwargs,
+        ).to(torch.complex64)
+
+        # Make sure caches exist
+        if not hasattr(self, "_otf_cache"):
+            self._otf_cache = {}
+
+        # Cache key base includes optics settings and FFT shape
+        NA = float(kwargs["NA"])
+        wavelength = float(kwargs["wavelength"])
+        n_medium = float(kwargs["refractive_index_medium"])
+
         z_index = 0
 
-        # Loop through volume and convolve sample with pupil function
+        # Loop through volume and convolve sample with OTF
         for i in index_iterator:
 
             if zero_plane[i]:
                 continue
 
             pupil = pupils[z_index]
+            zv = float(z_values[z_index].detach().cpu())
             z_index += 1
 
-            psf = torch.square(torch.abs(torch.fft.ifft2(torch.fft.fftshift(pupil))))
-            optical_transfer_function = torch.fft.fft2(psf)
-            fourier_field = torch.fft.fft2(volume[:, :, i])
-            convolved_fourier_field = fourier_field * optical_transfer_function
-            field = torch.fft.ifft2(convolved_fourier_field)
-            # # Discard remaining imaginary part (should be 0 up to rounding error)
-            field = torch.real(field)
-            output_image._value[:, :, 0] += field[
-                : padded_volume.shape[0], : padded_volume.shape[1]
-            ]
+            # --- Cached OTF for this defocus plane ---
+            otf_key = ("fluor_otf", Hfft, Wfft, NA, wavelength, n_medium, zv)
 
+            otf = self._otf_cache.get(otf_key, None)
+            if otf is None or otf.device != volume.device:
+                psf = torch.abs(torch.fft.ifft2(torch.fft.fftshift(pupil))) ** 2
+                otf = torch.fft.fft2(psf).to(torch.complex64)
+                self._otf_cache[otf_key] = otf
+
+            # Convolution in Fourier domain
+            fourier_field = torch.fft.fft2(volume[:, :, i])
+            field = torch.fft.ifft2(fourier_field * otf).real
+
+            output_image._value[:, :, 0] += field[: padded_volume.shape[0], : padded_volume.shape[1]]
+
+        # Crop final output
         output_image = output_image[pad[0]: -pad[2], pad[1]: -pad[3]]
 
-        # Some better way to do this probably...
         illuminated_volume = Image(illuminated_volume)
-        pupils = Image(pupils[0])
-        
-        output_image.properties = illuminated_volume.properties + pupils.properties
+
+        # If no active planes -> pupils can be empty, so don’t index pupils[0]
+        if isinstance(pupils, torch.Tensor) and pupils.numel() > 0 and pupils.shape[0] > 0:
+            pupils_img = Image(pupils[0])
+            output_image.properties = illuminated_volume.properties + pupils_img.properties
+        else:
+            # Just keep the illuminated volume properties
+            output_image.properties = illuminated_volume.properties
 
         return output_image
 
@@ -720,65 +825,112 @@ class Brightfield(Optics):
         
         voxel_size = get_active_voxel_size()
 
-        pupils = [
-            self._pupil_tensor(
-                volume.shape[:2], defocus=[1], include_aberration=False, device=volume.device, **kwargs
-            )[0].to(volume.device),
-            self._pupil_tensor(
-                volume.shape[:2],
-                defocus=[-z_limits[1]],
-                include_aberration=True,
-                device=volume.device,
-                **kwargs
-            )[0].to(volume.device),
-            self._pupil_tensor(
-                volume.shape[:2],
-                defocus=[0],
-                include_aberration=True,
-                device=volume.device,
-                **kwargs
-            )[0].to(volume.device)
-        ]
+        # --- Cached pupils (robust to changing optical parameters) ---
+        Hfft, Wfft = int(volume.shape[0]), int(volume.shape[1])
 
-        # Transform the pupils to torch tensors.
-        #pupils = [torch.tensor(pupil, dtype=torch.complex64).to(volume.device) for pupil in pupils]
+        # Pull required optical params explicitly
+        NA = float(kwargs["NA"])
+        wavelength = float(kwargs["wavelength"])
+        n_medium = float(kwargs["refractive_index_medium"])
 
-        pupil_step = torch.fft.fftshift(pupils[0])
+        # Any extra kwargs that _pupil_tensor may accept (avoid double-passing)
+        pupil_kwargs = dict(kwargs)
+        for k in [
+            "NA", "wavelength", "refractive_index_medium",
+            "defocus", "include_aberration", "device",
+            # not part of pupil; safe to remove
+            "padding", "output_region", "return_field"
+        ]:
+            pupil_kwargs.pop(k, None)
 
-        light_in = torch.ones((volume.shape[:2]), dtype=torch.complex64).to(volume.device)
+        # Defocus values used by your model
+        defocus_step = 1.0
+        defocus_focus = float(-z_limits[1])
+        defocus_final = 0.0
+
+        # Get pupils (cached) -> each returns (Z,H,W); index [0] for single defocus
+        p0 = self._cached_pupil_tensor(
+            (Hfft, Wfft),
+            NA=NA,
+            wavelength=wavelength,
+            refractive_index_medium=n_medium,
+            include_aberration=False,
+            defocus=[defocus_step],
+            device=volume.device,
+            **pupil_kwargs
+        )[0]
+
+        p1 = self._cached_pupil_tensor(
+            (Hfft, Wfft),
+            NA=NA,
+            wavelength=wavelength,
+            refractive_index_medium=n_medium,
+            include_aberration=True,
+            defocus=[defocus_focus],
+            device=volume.device,
+            **pupil_kwargs
+        )[0]
+
+        p2 = self._cached_pupil_tensor(
+            (Hfft, Wfft),
+            NA=NA,
+            wavelength=wavelength,
+            refractive_index_medium=n_medium,
+            include_aberration=True,
+            defocus=[defocus_final],
+            device=volume.device,
+            **pupil_kwargs
+        )[0]
+
+        # Cache fftshifted pupils too (keys include all important optics settings)
+        key0 = ("fftshift", Hfft, Wfft, NA, wavelength, n_medium, False, defocus_step)
+        key1 = ("fftshift", Hfft, Wfft, NA, wavelength, n_medium, True,  defocus_focus)
+        key2 = ("fftshift", Hfft, Wfft, NA, wavelength, n_medium, True,  defocus_final)
+
+        cached = self._fftshift_cache.get(key0, None)
+        if cached is None or cached.device != volume.device:
+            self._fftshift_cache[key0] = torch.fft.fftshift(p0)
+        cached = self._fftshift_cache.get(key1, None)
+        if cached is None or cached.device != volume.device:
+            self._fftshift_cache[key1] = torch.fft.fftshift(p1)
+        cached = self._fftshift_cache.get(key2, None)
+        if cached is None or cached.device != volume.device:
+            self._fftshift_cache[key2] = torch.fft.fftshift(p2)
+
+        pupil_step = self._fftshift_cache[key0]
+        shifted_pupil_focus = self._fftshift_cache[key1]
+        shifted_pupil_final = self._fftshift_cache[key2]
+
+        # Initial light field
+        light_in = torch.ones(volume.shape[:2], dtype=torch.complex64, device=volume.device)
         light_in = self.illumination.resolve(light_in)
         light_in = torch.fft.fft2(light_in)
 
-        K = 2 * torch.pi / kwargs["wavelength"]*kwargs["refractive_index_medium"]
+        K = 2 * torch.pi / kwargs["wavelength"] * kwargs["refractive_index_medium"]
 
-        z = z_limits[1]
         for i in index_iterator:
             light_in = light_in * pupil_step
-            #light_in = torch.where(zero_plane[i], light_in, light_in * pupil_step)
-            #if zero_plane[i]:
-            #    continue
-            
+
             ri_slice = volume[:, :, i]
             light = torch.fft.ifft2(light_in)
             light_out = light * torch.exp(1j * ri_slice * voxel_size[-1] * K)
             light_in = torch.fft.fft2(light_out)
-  
-        shifted_pupil = torch.fft.fftshift(pupils[1])
-        light_in_focus = light_in * shifted_pupil
+
+        # pupil at focus (already fftshifted)
+        light_in_focus = light_in * shifted_pupil_focus
 
         if len(fields) > 0:
             field = torch.sum(fields, axis=0)
-            light_in_focus += field[..., 0]
-        shifted_pupil = torch.fft.fftshift(pupils[-1])
-        light_in_focus = light_in_focus * shifted_pupil
-        # Mask to remove light outside the pupil.
-        mask = torch.abs(shifted_pupil) > 0
+            light_in_focus = light_in_focus + field[..., 0]
+
+        # final pupil (already fftshifted)
+        light_in_focus = light_in_focus * shifted_pupil_final
+
+        mask = torch.abs(shifted_pupil_final) > 0
         light_in_focus = light_in_focus * mask
 
-        output_image = torch.fft.ifft2(light_in_focus)[
-            : padded_volume.shape[0], : padded_volume.shape[1]
-        ]
-        output_image = torch.unsqueeze(output_image, axis=-1)
+        output_image = torch.fft.ifft2(light_in_focus)[:padded_volume.shape[0], :padded_volume.shape[1]]
+        output_image = torch.unsqueeze(output_image, dim=-1)
 
         # Intensity image if not returning field
         if not kwargs.get("return_field", False):

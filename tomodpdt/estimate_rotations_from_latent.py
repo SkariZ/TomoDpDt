@@ -5,7 +5,7 @@ import scipy.signal as signal
 from scipy.linalg import svd
 import cv2
 from skimage.restoration import unwrap_phase
-
+import matplotlib.pyplot as plt
 
 def process_latent_space(
     z,
@@ -19,7 +19,7 @@ def process_latent_space(
     max_peaks=7,
     min_peaks=2,
     prominence=0.2,
-    width=10,
+    width=15,
     basis_functions=15,
     initial_axes_case='cv2_flow',
     rotation_period='2pi',
@@ -221,6 +221,167 @@ def process_latent_space(
         "smoothed_distances": torch.tensor(res).to(device),
     }
 
+
+def process_latent_phase(
+    z,
+    frames=None,
+    initial_axes="y",
+    rotation_period="2pi",   # "pi", "2pi", or "auto"
+    basis_functions=15,
+    smooth_window=11,
+    smooth_poly=2,
+    min_peak_distance=15,    # frames, to suppress spurious close peaks
+    **kwargs
+):
+    """
+    Phase-based rotation initialization from 2D latent space.
+    Uses incremental signed angle (atan2 of cross/dot) -> cumulative angle.
+    Returns SAME dict schema as your other methods.
+    """
+
+    device = z.device
+    z = z.detach()
+
+    # --- 0) center to reduce drift (critical) ---
+    zc = z - z.mean(dim=0, keepdim=True)  # (N,2)
+
+    # Optional: make it more circular (helps a lot when ellipse-like)
+    # (simple PCA whitening)
+    Z = zc
+    cov = (Z.T @ Z) / (Z.shape[0] - 1 + 1e-8)
+    eigvals, eigvecs = torch.linalg.eigh(cov)
+    W = eigvecs @ torch.diag(1.0 / torch.sqrt(eigvals + 1e-6)) @ eigvecs.T
+    zw = (Z @ W.T)
+
+    # --- 1) incremental signed angle between consecutive vectors ---
+    v0 = zw[:-1]                       # (N-1,2)
+    v1 = zw[1:]                        # (N-1,2)
+    dot = (v0 * v1).sum(dim=1)         # (N-1,)
+    cross = v0[:, 0] * v1[:, 1] - v0[:, 1] * v1[:, 0]  # (N-1,)
+    dtheta = torch.atan2(cross, dot + 1e-8)            # in (-pi, pi)
+
+    # cumulative angle (starts at 0)
+    theta = torch.cat([torch.zeros(1, device=device), torch.cumsum(dtheta, dim=0)], dim=0)  # (N,)
+
+    # --- 2) smooth cumulative angle (optional but helps) ---
+    theta_np = theta.detach().cpu().numpy()
+    if smooth_window is not None and smooth_window > 3 and smooth_window < len(theta_np):
+        if smooth_window % 2 == 0:
+            smooth_window += 1
+        try:
+            theta_np = savgol_filter(theta_np, window_length=smooth_window, polyorder=smooth_poly)
+        except Exception:
+            pass
+    theta_s = torch.tensor(theta_np, device=device, dtype=torch.float32)
+
+    # --- 3) pick period (pi vs 2pi) ---
+    if rotation_period == "pi":
+        period = np.pi
+    elif rotation_period == "2pi":
+        period = 2 * np.pi
+    elif rotation_period == "auto":
+        # choose pi or 2pi based on "return-to-start" quality:
+        # compute candidate peaks for both, then keep the one whose peaks land closer to z0.
+        def get_peaks_for(period_val):
+            k = torch.floor(theta_s / period_val)
+            crossings = torch.where(k[1:] > k[:-1])[0] + 1
+            peaks = torch.cat([torch.tensor([0], device=device), crossings]).unique()
+            # enforce min distance
+            if len(peaks) > 1 and min_peak_distance is not None:
+                kept = [int(peaks[0])]
+                for t in peaks[1:].tolist():
+                    if t - kept[-1] >= min_peak_distance:
+                        kept.append(int(t))
+                peaks = torch.tensor(kept, device=device)
+            return peaks
+
+        peaks_pi = get_peaks_for(np.pi)
+        peaks_2pi = get_peaks_for(2 * np.pi)
+
+        z0 = zw[0]
+        def score(peaks):
+            if len(peaks) < 2:
+                return 1e9
+            d = torch.norm(zw[peaks] - z0, dim=1)
+            # robust: median distance at peaks (smaller = better)
+            return float(torch.median(d).item())
+
+        period = np.pi if score(peaks_pi) < score(peaks_2pi) else 2 * np.pi
+    else:
+        raise ValueError("rotation_period must be 'pi', '2pi', or 'auto'")
+
+    # --- 4) peaks by thresholding cumulative angle crossings ---
+    k = torch.floor(theta_s / period)
+    crossings = torch.where(k[1:] > k[:-1])[0] + 1
+    peaks = torch.cat([torch.tensor([0], device=device), crossings]).unique()
+
+    # suppress peaks too close together (kills the intermittent false ones)
+    if len(peaks) > 1 and min_peak_distance is not None:
+        kept = [int(peaks[0])]
+        for t in peaks[1:].tolist():
+            if t - kept[-1] >= min_peak_distance:
+                kept.append(int(t))
+        peaks = torch.tensor(kept, device=device)
+
+    if len(peaks) < 2:
+        raise ValueError("Not enough rotations detected from latent phase.")
+
+    # --- 5) angles timeline (piecewise linear between peaks) ---
+    n = z.shape[0]
+    angles = torch.zeros(n, device=device, dtype=torch.float32)
+
+    for i, t in enumerate(peaks.tolist()):
+        angles[t] = i * float(period)
+
+    for i in range(1, len(peaks)):
+        s = int(peaks[i - 1].item())
+        e = int(peaks[i].item())
+        if e > s:
+            angles[s:e] = torch.linspace(angles[s].item(), angles[e].item(), e - s, device=device)
+
+    # extend tail
+    last_pk = int(peaks[-1].item())
+    if last_pk < n - 1:
+        if len(peaks) > 1:
+            prev_pk = int(peaks[-2].item())
+            frames_per = max(1, last_pk - prev_pk)
+            w = float(period) / frames_per
+        else:
+            w = float(period) / max(1, n)
+        tail = torch.arange(0, n - last_pk, device=device) * w
+        angles[last_pk:] = angles[last_pk] + tail
+
+    # --- 6) angles -> quaternions ---
+    axes = torch.zeros((n, 3), device=device)
+    if initial_axes == "x":
+        axes[:, 0] = 1.0
+    elif initial_axes == "y":
+        axes[:, 1] = 1.0
+    else:
+        axes[:, 2] = 1.0
+
+    half = angles / 2.0
+    qw = torch.cos(half)
+    qxyz = axes * torch.sin(half).unsqueeze(1)
+    quaternions = torch.cat([qw.unsqueeze(1), qxyz], dim=1)
+
+    quaternions = ensure_quaternion_continuity(quaternions)
+    quaternions = enforce_initial_axis_direction(quaternions, axis=initial_axes)
+
+    basis = generate_basis_functions(quaternions.shape[0], basis_functions).to(device)
+    coeffs = initialize_basis_functions(basis, quaternions).to(device)
+
+    # for plotting: map cumulative angle to [0,1] saw-ish signal whose maxima correspond to peaks
+    cc = (torch.cos((theta_s % float(period)) / float(period) * 2 * np.pi) + 1.0) * 0.5
+    cc = cc / (cc.max() + 1e-8)
+
+    return {
+        "quaternions": quaternions.to(device),
+        "coeffs": coeffs.to(device),
+        "basis": basis.to(device),
+        "peaks": peaks.to(device),
+        "smoothed_distances": cc.to(device),
+    }
 
 def process_cross_correlation(
     frames, 
@@ -679,21 +840,85 @@ def quaternions_from_angles(th, n_quaternions, axis='y'):
 
     return Q_start
 
+def plot_signal_with_peaks(signal, peaks, title="", ylabel="signal"):
+    """
+    signal: (T,) torch or numpy
+    peaks: 1D iterable of indices
+    """
+    if isinstance(signal, torch.Tensor):
+        signal = signal.detach().cpu().numpy()
+    if isinstance(peaks, torch.Tensor):
+        peaks = peaks.detach().cpu().numpy()
 
-# Example usage
+    plt.figure(figsize=(10, 3))
+    plt.plot(signal, lw=2)
+    plt.scatter(peaks, signal[peaks], color="red", zorder=3, label="peaks")
+    plt.title(title)
+    plt.xlabel("frame")
+    plt.ylabel(ylabel)
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
 if __name__ == "__main__":
+    import torch
 
-    # Generate some random data
-    z = torch.randn(100, 2)
-    frames = torch.randn(100, 2, 32, 32)
+    # -----------------------------
+    # Create synthetic latent space
+    # -----------------------------
+    T = 200
+    t = torch.linspace(0, 6 * torch.pi, T)
 
-    # Process latent space
-    processed_data = process_latent_space(z, frames)
+    z = torch.stack([
+        torch.cos(t),
+        torch.sin(t)
+    ], dim=1)
 
-    # Print processed data
-    print(processed_data)
-    print(processed_data["quaternions"].shape)
-    print(processed_data["coeffs"].shape)
-    print(processed_data["basis"].shape)
-    print(processed_data["peaks"])
-    print(processed_data["smoothed_distances"].shape)
+    # add drift + noise (realistic)
+    z = z + 0.05 * torch.randn_like(z)
+    z = z + 0.002 * torch.arange(T).unsqueeze(1)
+
+    z = torch.tensor(np.load('latent_space2.npy')).to('cuda')
+
+    # -----------------------------
+    # Phase-based method
+    # -----------------------------
+    out_phase = process_latent_phase(
+        z,
+        frames=None,
+        initial_axes="y",
+        rotation_period="2pi",
+        basis_functions=15,
+        smooth_window=11,
+        smooth_poly=2,
+    )
+
+    plot_signal_with_peaks(
+        out_phase["smoothed_distances"],
+        out_phase["peaks"],
+        title="Phase-based latent signal + peaks",
+        ylabel="phase (unwrapped)",
+    )
+
+    print("Phase peaks:", out_phase["peaks"].cpu().numpy())
+    print("Phase peak diffs:", torch.diff(out_phase["peaks"]).cpu().numpy())
+
+    # -----------------------------
+    # Distance-based (your original)
+    # -----------------------------
+    out_dist = process_latent_space(
+        z,
+        frames=torch.zeros(T, 2, 32, 32),  # dummy
+        initial_axes="y",
+        rotation_period="2pi",
+    )
+
+    plot_signal_with_peaks(
+        out_dist["smoothed_distances"],
+        out_dist["peaks"],
+        title="Distance-based latent signal + peaks",
+        ylabel="1 - normalized distance",
+    )
+
+    print("Distance peaks:", out_dist["peaks"].cpu().numpy())
+    print("Distance peak diffs:", torch.diff(out_dist["peaks"]).cpu().numpy())

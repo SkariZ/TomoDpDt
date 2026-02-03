@@ -5,18 +5,18 @@ import deeplay as dl
 
 class ConvVAE(nn.Module):
     def __init__(
-            self,
-            input_shape,
-            latent_dim=2,
-            conv_channels=[64, 48, 32],
-            dense_dim=128,
-            activation='lrelu',
-            output_activation='sigmoid',
-            dropout=0.1,
-            ):
-        super(ConvVAE, self).__init__()
+        self,
+        input_shape,
+        latent_dim=2,
+        conv_channels=[64, 48, 32],
+        dense_dim=128,
+        activation="lrelu",
+        output_activation="sigmoid",
+        dropout=0.0,
+    ):
+        super().__init__()
 
-        self.input_shape = input_shape
+        self.input_shape = input_shape  # (C,H,W)
         self.latent_dim = latent_dim
         self.conv_channels = conv_channels
         self.dense_dim = dense_dim
@@ -24,121 +24,122 @@ class ConvVAE(nn.Module):
         self.output_activation = output_activation
         self.dropout = dropout
 
-        self.encoder = self.build_encoder()
-        
         if len(self.conv_channels) != 3:
             raise ValueError("conv_channels must have 3 elements, hardcoded for now...")
 
-        #self.fc_mu = nn.Linear(self.flattened_size(), latent_dim)
-        #self.fc_log_var = nn.Linear(self.flattened_size(), latent_dim)
-        #self.fc_decode = nn.Linear(latent_dim, self.flattened_size())
-        
+        # Safety: 3 pooling layers => H,W must be divisible by 8
+        H, W = self.input_shape[1], self.input_shape[2]
+        if (H % 8) != 0 or (W % 8) != 0:
+            raise ValueError(f"ConvVAE expects H,W divisible by 8 (3 pools). Got H,W={(H, W)}")
+
+        self.encoder = self.build_encoder()
+
         self.flattened_size = self.get_flattened_size()
-        self.H = self.calculate_H()
+        self.H = self.calculate_H()  # (H//8, W//8)
         self.decoder = self.build_decoder()
 
         self.fc_mu = dl.MultiLayerPerceptron(
-            self.flattened_size, 
-            hidden_features=[16], 
-            out_features=latent_dim
-            )
+            self.flattened_size,
+            hidden_features=[16],
+            out_features=latent_dim,
+        )
         self.fc_var = dl.MultiLayerPerceptron(
-            self.flattened_size, 
-            hidden_features=[16], 
-            out_features=latent_dim
-            )
+            self.flattened_size,
+            hidden_features=[16],
+            out_features=latent_dim,
+        )
         self.fc_dec = dl.MultiLayerPerceptron(
-            latent_dim, 
-            hidden_features=[24], 
-            out_features=self.flattened_size
-            )
+            latent_dim,
+            hidden_features=[32],
+            out_features=self.flattened_size,
+        )
 
     def get_activation(self, activation):
-        if activation == 'relu':
+        if activation == "relu":
             return nn.ReLU()
-        elif activation == 'lrelu':
+        elif activation == "lrelu":
             return nn.LeakyReLU(0.1)
-        elif activation == 'sigmoid':
+        elif activation == "sigmoid":
             return nn.Sigmoid()
-        elif activation == 'tanh':
+        elif activation == "tanh":
             return nn.Tanh()
-        elif activation == 'celu':
+        elif activation == "celu":
             return nn.CELU()
+        elif activation == "linear":
+            return nn.Identity()
         else:
             return nn.Identity()
 
     def get_flattened_size(self):
-        dummy_input = torch.zeros(1, *self.input_shape)  # Shape: (1, C, H, W)
-        dummy_output = self.encoder(dummy_input)  # Shape: (1, C', H', W')
-        return dummy_output.view(1, -1).shape[1]  # Flatten to (1, N) and return N
-    
+        dummy_input = torch.zeros(1, *self.input_shape)  # (1,C,H,W)
+        dummy_output = self.encoder(dummy_input)         # (1,N)
+        return dummy_output.view(1, -1).shape[1]
+
     def calculate_H(self):
-        # Get input height and width
-        input_height, input_width = self.input_shape[1], self.input_shape[2]
-        
-        # Number of pooling layers
-        num_poolings = len(self.conv_channels)  # Based on the number of convolutional layers (with pooling)
+        H, W = self.input_shape[1], self.input_shape[2]
+        return (H // 8, W // 8)
 
-        # Calculate reduced height and width after max pooling
-        # Each max pooling with kernel size 2 reduces the size by a factor of 2
-        reduced_height = input_height // (2 ** num_poolings)
-        reduced_width = input_width // (2 ** num_poolings)
-        
-        return (reduced_height, reduced_width)
-
-    def build_encoder(self):
-        """
-        Build the encoder.
-        """
-        encoder = nn.Sequential(
-            nn.Conv2d(self.input_shape[0], self.conv_channels[0], 3, 1, 1),
-            nn.BatchNorm2d(self.conv_channels[0]),
-            self.get_activation(self.activation),
-            nn.Dropout(self.dropout),
-            self.conv_block(self.conv_channels[0], self.conv_channels[0]),
-            nn.MaxPool2d(2),
-            self.conv_block(self.conv_channels[0], self.conv_channels[1]),
-            nn.MaxPool2d(2),
-            self.conv_block(self.conv_channels[1], self.conv_channels[2]),
-            nn.MaxPool2d(2),
-            nn.Flatten()
-            )
-        return encoder
-    
     def conv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
         return nn.Sequential(
             nn.Conv2d(in_channels, out_channels, kernel_size, stride, padding),
-            #nn.BatchNorm2d(out_channels),
             self.get_activation(self.activation),
-            nn.Dropout(self.dropout)
-            )
-    
-    def upconv_block(self, in_channels, out_channels, kernel_size=3, stride=1, padding=1):
-        return nn.Sequential(
-            nn.ConvTranspose2d(in_channels, out_channels, kernel_size, stride, padding),
-            #nn.BatchNorm2d(out_channels),
+            nn.Dropout(self.dropout),
+        )
+
+    def upconv2_block(self, in_channels, out_channels, activation=True):
+        # This EXACTLY doubles H,W with kernel=4,stride=2,pad=1
+        layers = [
+            nn.ConvTranspose2d(in_channels, out_channels, kernel_size=4, stride=2, padding=1),
+        ]
+        if activation:
+            layers += [self.get_activation(self.activation)]
+        layers += [nn.Dropout(self.dropout)]
+        return nn.Sequential(*layers)
+
+    def build_encoder(self):
+        C = self.input_shape[0]
+        c0, c1, c2 = self.conv_channels
+
+        encoder = nn.Sequential(
+            nn.Conv2d(C, c0, 3, 1, 1),
+            nn.GroupNorm(num_groups=8, num_channels=c0),
             self.get_activation(self.activation),
-            nn.Dropout(self.dropout)
-            )
+            nn.Dropout(self.dropout),
+
+            self.conv_block(c0, c0),
+            nn.MaxPool2d(2),   # /2
+
+            self.conv_block(c0, c1),
+            nn.MaxPool2d(2),   # /4
+
+            self.conv_block(c1, c2),
+            nn.MaxPool2d(2),   # /8
+
+            nn.Flatten(),
+        )
+        return encoder
 
     def build_decoder(self):
-        """
-        Build the decoder.
-        """ 
+        C = self.input_shape[0]
+        c0, c1, c2 = self.conv_channels
+        h8, w8 = self.H  # H//8, W//8
+
         decoder = nn.Sequential(
-            nn.Unflatten(1, (self.conv_channels[2], self.H[0], self.H[1])),
-            self.conv_block(self.conv_channels[2], self.conv_channels[2]),
-            self.upconv_block(self.conv_channels[2], self.conv_channels[2]),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            self.upconv_block(self.conv_channels[2], self.conv_channels[1]),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            self.upconv_block(self.conv_channels[1], self.conv_channels[0]),
-            nn.Upsample(scale_factor=2, mode='bilinear'),
-            self.upconv_block(self.conv_channels[0], self.input_shape[0]),
-            nn.Conv2d(self.input_shape[0], self.input_shape[0], 3, 1, 1),
-            self.get_activation(self.output_activation)
-            )
-        
+            nn.Unflatten(1, (c2, h8, w8)),  # (c2, H/8, W/8)
+
+            self.conv_block(c2, c2),
+
+            self.upconv2_block(c2, c1),     # -> (c1, H/4, W/4)
+            self.conv_block(c1, c1),
+
+            self.upconv2_block(c1, c0),     # -> (c0, H/2, W/2)
+            self.conv_block(c0, c0),
+
+            self.upconv2_block(c0, C, activation=False),  # -> (C, H, W)
+
+            nn.Conv2d(C, C, 3, 1, 1),
+            self.get_activation(self.output_activation),
+        )
         return decoder
 
 if __name__ == "__main__":

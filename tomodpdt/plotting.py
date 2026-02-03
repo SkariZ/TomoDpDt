@@ -491,19 +491,10 @@ class TomoPlotter:
 
         if pred is None:
             if not forward:
-                try: 
-                    m = self.tomo.vae_model.to(self.tomo.frames.device)
-                    pred = m(self.tomo.frames)[0].cpu().numpy()
-                    pred = pred[r_idx]
-                except:
-                    # Crop to size tomo.H_vae, tomo.W_vae
-                    start_h = (self.tomo.frames.shape[2] - self.tomo.H_vae) // 2
-                    start_w = (self.tomo.frames.shape[3] - self.tomo.W_vae) // 2
-                    frames = self.tomo.frames[:, :, start_h:start_h + self.tomo.H_vae, start_w:start_w + self.tomo.W_vae]
-                    pred = m(frames)[0].cpu().numpy()
-                    gt = frames.cpu().numpy()
-                    pred = pred[r_idx]
-                    gt = gt[r_idx]
+                pred = self.tomo.vae_forward(x=self.tomo.frames[r_idx], return_latent=False).cpu().numpy()
+
+                # Ground truth frames(cropped if needed and preprocessed)
+                gt = self.tomo.vae_preprocess(self.tomo.frames[r_idx]).cpu().numpy()
 
             else:
                 pred = self.tomo.full_forward_final(max_projections=10, idx=r_idx).detach().cpu().numpy()

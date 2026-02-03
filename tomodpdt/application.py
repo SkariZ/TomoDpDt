@@ -10,17 +10,34 @@ from typing import Optional, Sequence
 import time
 import numpy as np
 
+
 # Importing the necessary modules
 try: 
     import tomodpdt.estimate_rotations_from_latent as erfl
     import tomodpdt.vaemod as vm
     import tomodpdt.plotting as tp
+    from tomodpdt.imaging_modality_torch import setup_optics
+    from tomodpdt.imaging_modality_torch import imaging_model
 
 except:
     import estimate_rotations_from_latent as erfl
     import vaemod as vm
     import plotting as tp
+    from imaging_modality_torch import setup_optics
+    from imaging_modality_torch import imaging_model
 
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class StageSpec:
+    name: str
+    scale: float = 1.0
+    blur_sigma: float = 0.0
+    use_latent: bool = True
+    downsample_frames: bool = True
+    # Optional per-stage overrides
+    loss_weights: Optional[dict] = None
+    optics_kwargs: Optional[dict] = None
 
 class Sum3d2d(nn.Module):
     def __init__(self, dim=-1):
@@ -152,7 +169,17 @@ class Tomography(dl.Application):
         self.imaging_model = imaging_model if imaging_model is not None else Sum3d2d(dim=-1)
         
         # Determine the device (cuda if available, else cpu)
-        self._device = torch.device("cuda" if torch.cuda.is_available() else getattr(vae_model, "device", "cpu"))
+        if torch.cuda.is_available():
+            self._device = torch.device("cuda")
+        else:
+            # if a custom vae_model was passed and has parameters, use that device
+            if vae_model is not None:
+                try:
+                    self._device = next(vae_model.parameters()).device
+                except StopIteration:
+                    self._device = torch.device("cpu")
+            else:
+                self._device = torch.device("cpu")
         
         # Set initial volume if provided, otherwise default to "zeros"
         self.initial_volume = initial_volume if initial_volume is not None else "zeros"
@@ -206,22 +233,17 @@ class Tomography(dl.Application):
         # Call the superclass constructor
         super().__init__(**kwargs)
 
-        # Store normalized voxel-space grid for single volume
-        lin_x = torch.linspace(-1, 1, self.nx, device=self._device)
-        lin_y = torch.linspace(-1, 1, self.ny, device=self._device)
-        lin_z = torch.linspace(-1, 1, self.nz, device=self._device)
+        # --- Buffers (move with .to(), saved in state_dict) ---
+        lin_x = torch.linspace(-1, 1, self.nx)
+        lin_y = torch.linspace(-1, 1, self.ny)
+        lin_z = torch.linspace(-1, 1, self.nz)
 
-        xx, yy, zz = torch.meshgrid(lin_x, lin_y, lin_z, indexing='ij')
-        grid = torch.stack([xx, yy, zz], dim=-1)
-        self.grid = grid.view(self.nx, self.ny, self.nz, 3)  # (nx, ny, nz, 3)
+        xx, yy, zz = torch.meshgrid(lin_x, lin_y, lin_z, indexing="ij")
+        grid = torch.stack([xx, yy, zz], dim=-1)                 # (nx, ny, nz, 3)
+        grid_batch = grid.view(-1, 3)                            # (nx*ny*nz, 3)
 
-        # Store flat normalized grid for batch processing
-        grid_batch = grid.view(-1, 3)  # Shape: (nx*ny*nz, 3)
-        self.grid_batch = grid_batch
-
-        # Move grids to the device
-        self.grid = self.grid.to(self._device)
-        self.grid_batch = self.grid_batch.to(self._device)
+        self.register_buffer("grid", grid)
+        self.register_buffer("grid_batch", grid_batch)
 
         # Placeholder
         self.normalize = False
@@ -270,6 +292,25 @@ class Tomography(dl.Application):
                 zz.to(self._device)
                 ]
 
+        # --- Multistage continuation config ---
+        self.stage_scale = 1.0
+        self.stage_blur_sigma = 0.0
+        self.stage_use_latent = True
+        self.stage_downsample_frames = True
+
+        # caches
+        self._imaging_model_cache = {}
+        self._current_stage_key = None
+        self.imaging_model_stage = self.imaging_model  # default
+
+        self._grid_cache = {}  # stage grids keyed by (nx, ny, nz, device)
+        self._stage_shape = self.volume_size
+        self._stage_name = "full"
+
+        self.stages: Optional[list[StageSpec]] = None
+        self.stage_idx: int = 0
+        self.stage_step: int = 0  # step counter inside stage
+
     def initialize_parameters(self, projections, **kwargs):
         """
         Initialize model parameters:
@@ -312,71 +353,31 @@ class Tomography(dl.Application):
         # -------------------------------------------------------
         if kwargs.get('train_vae', True):
 
-            if self.CH > 0 and min([self.nx, self.ny]) >= 24:
-                _, C, H, W = projections.shape
-                self.H_orig, self.W_orig = H, W
+            vae_size = kwargs.get("vae_size", 64)
+            self.H_vae = vae_size
+            self.W_vae = vae_size
 
-                # Crop projections to 96*96 if possible else, 64*64 if possible, else to 32*32
-                crop_arg = kwargs.get('crop_projections', True)
+            # Pad projections to multiples of 8 for VAE training
+            projections_vae = self.center_crop_or_pad(projections, self.H_vae, self.W_vae)
 
-                if H > 96 and W > 96 and crop_arg:
-                    # Crop to 96*96 centered
-                    start_h = (H - 96) // 2
-                    start_w = (W - 96) // 2
-                    projections = projections[:, :, start_h:start_h + 96, start_w:start_w + 96]
-                    H, W = projections.shape[2], projections.shape[3]
+            # If not fluorescence, use standardization
+            if self.imaging_model.microscopy_regime != "fluorescence":
+                projections_vae = self.robust_standardize_for_vae(projections_vae)
+                self.vae_preprocess_mode = "robust"
 
-                elif H > 64 and W > 64 and crop_arg:
-                    # Crop to 64*64 centered
-                    start_h = (H - 64) // 2
-                    start_w = (W - 64) // 2
-                    projections = projections[:, :, start_h:start_h + 64, start_w:start_w + 64]
-                    H, W = projections.shape[2], projections.shape[3]
-
-                elif H > 32 and W > 32 and crop_arg:
-                    # Crop to 32*32 centered
-                    start_h = (H - 32) // 2
-                    start_w = (W - 32) // 2
-                    projections = projections[:, :, start_h:start_h + 32, start_w:start_w + 32]
-                    H, W = projections.shape[2], projections.shape[3]
-                #else:
-                #    raise ValueError("Projections are too small for VAE training. Minimum size is 32x32.")
-                
-                # The size
-                self.H_vae, self.W_vae = H, W
-
-                # Estimate beta
-                if self.normalize:
-                    self.vae_model.beta = 0.001 if 'fluorescence' in self.imaging_model.microscopy_regime else 0.025
-                else:
-                    r_loss = torch.mean(torch.abs(projections - torch.mean(projections)))
-                    kl_loss = 0.5 * torch.mean(torch.sum(
-                        1 + torch.zeros(C, 2) - torch.zeros(C, 2).exp() - torch.zeros(C, 2).pow(2), dim=1
-                    ))
-                    ratio = r_loss / (kl_loss + 1e-8)
-                    self.vae_model.beta = 1e-5 if ratio > 1 else 1e-6
-
-                # Keyword for beta override
-                if 'vae_beta' in kwargs:
-                    self.vae_model.beta = kwargs['vae_beta']
-
-                # Build VAE to match padded dimensions
-                vae = vm.ConvVAE(
-                    input_shape=(self.CH, self.H_vae, self.W_vae),
-                    latent_dim=2,
-                    output_activation='sigmoid' if self.normalize else 'linear'
-                )
-                self.vae_model.encoder = vae.encoder
-                self.vae_model.decoder = vae.decoder
-                self.vae_model.fc_mu = vae.fc_mu
-                self.vae_model.fc_var = vae.fc_var
-                self.vae_model.fc_dec = vae.fc_dec
-                if not self.normalize:
-                    self.vae_model.reconstruction_loss = torch.nn.L1Loss()
-            else:
-                # No padding needed
-                self.H_vae, self.W_vae = projections.shape[2:]
-
+            # Use the padded projections for VAE training
+            vae = vm.ConvVAE(
+                input_shape=(self.CH, self.H_vae, self.W_vae),
+                latent_dim=2,
+                output_activation="linear",
+                dropout=0.05,
+            )
+            self.vae_model.encoder = vae.encoder
+            self.vae_model.decoder = vae.decoder
+            self.vae_model.fc_mu = vae.fc_mu
+            self.vae_model.fc_var = vae.fc_var
+            self.vae_model.fc_dec = vae.fc_dec
+            self.vae_model.reconstruction_loss = torch.nn.L1Loss()
 
         # -------------------------------------------------------
         # --- 3. Train VAE (only on padded data)
@@ -385,22 +386,55 @@ class Tomography(dl.Application):
         vae_attempts = 0
         max_vae_attempts = 3
 
+        target_beta = kwargs.get(
+            "vae_beta",
+            1e-4 if "fluorescence" in self.imaging_model.microscopy_regime else 5e-4
+            )
+
+        total_epochs = kwargs.get("max_epochs", 300)
+
         while not vae_success and vae_attempts < max_vae_attempts:
             vae_attempts += 1
             try:
                 if self.vae_model.training:
-                    self.train_vae(projections, **kwargs)
+                    warmup_epochs = int(kwargs.get("vae_warmup_epochs", 0))
+                    total_epochs = int(total_epochs)
+
+                    if warmup_epochs > 0:
+                        # Phase 1: beta=0 (pure reconstruction)
+                        self.vae_model.beta = 0.0
+                        self.train_vae(projections_vae, max_epochs=warmup_epochs, batch_size=16)
+
+                        # --- make sure VAE is trainable for phase 2 ---
+                        self.vae_model.train()
+                        self.vae_model.to(self._device)
+                        for p in self.vae_model.parameters():
+                            p.requires_grad_(True)
+
+                        # Phase 2: target beta
+                        self.vae_model.beta = target_beta
+                        self.train_vae(projections_vae, max_epochs=total_epochs - warmup_epochs, batch_size=32)
+                    else:
+                        # No warmup
+                        self.vae_model.beta = target_beta
+                        self.train_vae(projections_vae, max_epochs=total_epochs, batch_size=32)
+
+                    # trainer might leave it on CPU
+                    self.vae_model.to(self._device)
+                    self.encoder = self.vae_model.encoder.to(self._device)
+                    self.fc_mu = self.vae_model.fc_mu.to(self._device)
 
                 # -------------------------------------------------------
                 # --- 4. Latent space & rotation initialization
                 # -------------------------------------------------------
-                latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections))
+                with torch.no_grad():
+                    latent_space = self.vae_model.fc_mu(self.vae_model.encoder(projections_vae))
                 self.latent = latent_space
 
                 # Try latent-space initialization
                 self.rotation_initial_dict = erfl.process_latent_space(
                     z=latent_space,
-                    frames=projections,
+                    frames=projections_vae,
                     **kwargs
                 )
                 print("✅ Rotation initialization from latent space successful.")
@@ -416,20 +450,21 @@ class Tomography(dl.Application):
                     vae = vm.ConvVAE(
                         input_shape=(self.CH, self.H_vae, self.W_vae),
                         latent_dim=2,
-                        output_activation='sigmoid' if self.normalize else 'linear'
-                    )
+                        output_activation='linear',
+                        dropout=0.0,
+                        )
+                    
                     self.vae_model.encoder = vae.encoder
                     self.vae_model.decoder = vae.decoder
                     self.vae_model.fc_mu = vae.fc_mu
                     self.vae_model.fc_var = vae.fc_var
                     self.vae_model.fc_dec = vae.fc_dec
-                    if not self.normalize:
-                        self.vae_model.reconstruction_loss = torch.nn.L1Loss()
+                    self.vae_model.reconstruction_loss = torch.nn.L1Loss()
 
                 else:
                     print("VAE repeatedly failed — switching to cross-correlation initialization.")
                     self.rotation_initial_dict = erfl.process_cross_correlation(
-                        frames=projections,
+                        frames=projections_vae,
                         **kwargs
                     )
                     print("✅ Rotation initialization via cross-correlation successful.")
@@ -446,7 +481,13 @@ class Tomography(dl.Application):
             else:
                 raise ValueError("Invalid rotation optimization case. Must be 'quaternion' or 'basis'.")
 
-            self.rotation_params = nn.Parameter(rotation_params.to(self._device))
+            rp = rotation_params.to(self._device)
+
+            if self.rotation_optim_case == "quaternion":
+                rp = rp / (rp.norm(dim=-1, keepdim=True) + 1e-12)
+
+            # Set as learnable parameters
+            self.rotation_params = nn.Parameter(rp)
 
             # Determine number of frames needed for optimization
             N_frames_needed = self.rotation_initial_dict["peaks"][-1].item()
@@ -459,7 +500,7 @@ class Tomography(dl.Application):
             self.latent = torch.zeros(N_frames_needed, 2, device=self._device)
 
         # Throw error if automatic_optimizations is True but VAE training is skipped
-        if self.automatic_optimization and not self.vae_model.training:
+        if self.automatic_optimization and not vae_success:
             raise RuntimeError("VAE training is required for automatic optimization.")
 
         # -------------------------------------------------------
@@ -483,14 +524,6 @@ class Tomography(dl.Application):
         @self.optimizer.params
         def params(self):
             return self.parameters()
-
-        # -------------------------------------------------------
-        # --- 10. Background correction initialization
-        # -------------------------------------------------------
-        #self.V0 = self.imaging_model(self.volume * 0).detach()
-        #if self.V0.dtype == torch.complex64:
-        #    self.V0_phase = torch.median(torch.angle(self.V0))
-        #    self.V0 = self.V0 * torch.exp(-1j * self.V0_phase)
 
     def configure_optimizers(self):
         param_groups = []
@@ -529,16 +562,17 @@ class Tomography(dl.Application):
         return [optimizer], [scheduler]
 
     def compute_global_min_max(self, projections):
-        """
-        Compute the global min/max values per channel over the entire dataset.
-        """
-        # Compute the global min/max values per channel over the entire dataset
+        """Compute and store global min/max per channel as buffers."""
         global_min = torch.amin(projections, dim=(0, 2, 3))
-        global_max = torch.amax(projections, dim=(0, 2, 3))  
+        global_max = torch.amax(projections, dim=(0, 2, 3))
 
-        # Set the global min/max values
-        self.global_min = global_min.to(self._device)
-        self.global_max = global_max.to(self._device)
+        # create buffers if they don't exist yet
+        if not hasattr(self, "global_min"):
+            self.register_buffer("global_min", global_min)
+            self.register_buffer("global_max", global_max)
+        else:
+            self.global_min.copy_(global_min)
+            self.global_max.copy_(global_max)
 
     def per_channel_normalization(self, projections):
         """
@@ -593,25 +627,86 @@ class Tomography(dl.Application):
         self.vae_model.build()
 
         # Train the VAE model
-        trainer = dl.Trainer(max_epochs=max_epochs, accelerator="auto")
+        trainer = dl.Trainer(
+            max_epochs=max_epochs,
+            accelerator="auto",
+            logger=False,
+            enable_checkpointing=False,
+            enable_model_summary=False,
+            log_every_n_steps=0,
+            enable_progress_bar=True,
+        )
         trainer.fit(self.vae_model, data_loader)
 
         # Freeze the VAE model
-        for param in self.vae_model.parameters():
-            param.requires_grad = False
+        self.vae_model.eval()
+        for p in self.vae_model.parameters():
+            p.requires_grad_(False)
 
         # Freeze the encoder layer
         for param in self.vae_model.encoder.parameters():
-            param.requires_grad = False
+            param.requires_grad_(False)
 
         # Freeze the fc_mu layer
         for param in self.vae_model.fc_mu.parameters():
-            param.requires_grad = False
+            param.requires_grad_(False)
 
         # Update the VAE model and the needed components and move them to the device
         self.encoder = self.vae_model.encoder.to(self._device)
         self.fc_mu = self.vae_model.fc_mu.to(self._device)
-        
+
+    def vae_preprocess(self, x):
+        """Match EXACT VAE training preprocessing."""
+        x = self.center_crop_or_pad(x, self.H_vae, self.W_vae)
+
+        # Choose ONE and keep consistent with VAE training
+        mode = getattr(self, "vae_preprocess_mode", "none")  # "none" | "standard" | "robust"
+        if mode == "standard" and hasattr(self, "standardize_for_vae"):
+            x = self.standardize_for_vae(x)
+        elif mode == "robust" and hasattr(self, "robust_standardize_for_vae"):
+            x = self.robust_standardize_for_vae(x)
+
+        return x
+
+    def vae_forward(self, x, return_recon=True, return_latent=True, grad_to_input=False):
+        """
+        Forward through the *frozen* VAE using the same preprocessing as training.
+
+        x: (B,C,H,W)  (typically yhat_for_vae)
+        grad_to_input:
+            False -> no graph (for logging/visualization)
+            True  -> keep graph wrt x (for latent/perceptual loss to optimize volume/rotations)
+
+        Returns:
+            recon (optional), mu (optional)
+        """
+        # Make sure VAE is on the right device
+        self.vae_model.to(self._device)
+        self.vae_model.eval()
+
+        x_vae = self.vae_preprocess(x).to(self._device)
+
+        # Freeze weights (safe even if already frozen)
+        for p in self.vae_model.parameters():
+            p.requires_grad_(False)
+
+        ctx = torch.enable_grad() if grad_to_input else torch.no_grad()
+        with ctx:
+            out = self.vae_model(x_vae)
+            recon = out[0] if isinstance(out, (tuple, list)) else out
+
+            # Deeplay VAE uses fc_mu(encoder(x)) internally too; we compute it explicitly
+            feat = self.vae_model.encoder(x_vae)
+            mu = self.vae_model.fc_mu(feat)
+
+        if return_recon and return_latent:
+            return recon, mu
+        elif return_recon:
+            return recon
+        elif return_latent:
+            return mu
+        return None
+
     def initialize_volume(self):
         """
         Initialize the volume with shape (nx, ny, nz) from self.volume_size.
@@ -695,34 +790,32 @@ class Tomography(dl.Application):
         # --- 1. Fetch parameters ---
         quaternions = self.get_quaternions(self.rotation_params)[idx]
         translations = self.get_translations(self.translation_params)[idx]
+        translations = self._scale_translations_for_stage(translations, self._stage_shape)
 
-        # --- 2. Retrieve and condition the volume ---
-        volume = self.get_volume()
+        # --- 2. Retrieve stage volume (blur+downsample) ---
+        volume_stage = self._get_volume_for_stage()
 
         batch_size = quaternions.shape[0]
-        estimated_projections_batch = torch.zeros(
-            batch_size, self.CH, self.nx, self.ny, device=self._device
-        )
+        nx_s, ny_s, _ = self._stage_shape
+        estimated_projections_batch = torch.zeros(batch_size, self.CH, nx_s, ny_s, device=self._device)
 
-        # --- 3. Minibatching setup ---
-        if batch_size < self.minibatch:
-            self.minibatch = batch_size
-
-        indexes = torch.arange(0, batch_size)
-        b_idx = [indexes[i:i + self.minibatch] for i in range(0, len(indexes), self.minibatch)]
+        # --- 3. Minibatching setup (do NOT mutate self.minibatch) ---
+        mb = min(self.minibatch, batch_size)
+        indexes = torch.arange(0, batch_size, device=self._device)
+        b_idx = [indexes[i:i + mb] for i in range(0, batch_size, mb)]
 
         # --- 4. Loop through mini-batches ---
         for b in b_idx:
             # Apply rotations to a single volume using a batch of quaternions
-            rotated_volumes = self.apply_rotation_batch(
-                volume=volume, 
-                quaternions=quaternions[b], 
+            rotated_volumes = self.apply_rotation_batch_stage(
+                volume=volume_stage,
+                quaternions=quaternions[b],
                 translations=translations[b] if translations is not None else None
             )
             
             # --- 5. Forward through the imaging model ---
-            if isinstance(self.imaging_model, nn.Module):
-                estimated_projections = self.imaging_model(rotated_volumes)
+            if isinstance(self.imaging_model_stage, nn.Module):
+                estimated_projections = self.imaging_model_stage(rotated_volumes)
 
                 # Handle single-channel (e.g., brightfield or fluorescence intensity)
                 if self.CH == 1:
@@ -731,8 +824,6 @@ class Tomography(dl.Application):
                 
                 # Handle two-channel complex projections
                 elif self.CH > 1 and estimated_projections.dtype == torch.complex64:
-                    #estimated_projections = estimated_projections * torch.exp(-1j * self.V0_phase)
-                    #estimated_projections = estimated_projections - self.V0 + 1
                     estimated_projections = torch.cat(
                         (estimated_projections.real, estimated_projections.imag), dim=-1
                     )
@@ -742,6 +833,14 @@ class Tomography(dl.Application):
                     estimated_projections = estimated_projections.permute(0, 3, 1, 2)
                 if estimated_projections.dim() == 3 and estimated_projections.shape[1] != self.CH:
                     estimated_projections = estimated_projections.unsqueeze(1)
+
+                # Ensure final shape is (B, C, nx, ny)
+                assert estimated_projections.shape[1] == self.CH, (
+                    f"Estimated projections channel mismatch: got {estimated_projections.shape}, expected C={self.CH}"
+                    )
+                assert estimated_projections.shape[2] == nx_s and estimated_projections.shape[3] == ny_s, (
+                    f"Spatial mismatch: got {estimated_projections.shape[2:]}, expected (nx,ny)=({nx_s},{ny_s})"
+                    )
 
                 # Store the batch projections
                 estimated_projections_batch[b] = estimated_projections
@@ -759,12 +858,14 @@ class Tomography(dl.Application):
         # Get indices and corresponding frames
         idx_batch = batch
         frames_batch = self.frames[idx_batch]
-
+        
         # Safely unpad to original size.
         if hasattr(self, 'H_orig') and hasattr(self, 'W_orig'):
             if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
                 frames_batch = self.unpad_to_original(frames_batch)
         
+        frames_batch = self._prepare_frames_for_stage(frames_batch)
+
         if self.smooth_startup:
             # If global_step is below 100 set the rotation_params to not require gradients
             if self.global_step < self.smooth_startup_rotations and self.rotation_params.requires_grad == True and self.rotation_params_flag == True:
@@ -778,28 +879,33 @@ class Tomography(dl.Application):
             elif self.global_step >= self.smooth_startup_translations and self.translation_params.requires_grad == False and self.translation_params_flag == True:
                 self.translation_params.requires_grad = True
 
-        # Forward pass: estimate projections
+        # forward model output (stage-sized)
         yhat = self.forward(idx_batch)
 
-        # Normalize predictions if required
+        # keep raw model output for VAE branch (do NOT apply physics normalization to this)
+        yhat_for_vae = yhat
+
+        # physics normalization (only for projection/data term)
+        frames_phys = frames_batch
+        yhat_phys = yhat
+
         if self.normalize:
-            yhat = self.per_channel_normalization(yhat)
+            frames_phys = self.per_channel_normalization(frames_phys)
+            yhat_phys = self.per_channel_normalization(yhat_phys)
 
         if self.automatic_optimization == True:
 
-            # Prepare VAE input (pad yhat if necessary)
-            yhat_vae = self.pad_for_vae(yhat, self.H_vae, self.W_vae)
-        
-            # Compute latent space from VAE
-            with torch.no_grad():
-                latent_space = self.fc_mu(self.encoder(yhat_vae))
+            # VAE forward (with gradient to input for latent loss)
+            if self.stage_use_latent:
+                latent_space = self.vae_forward(yhat_for_vae, return_recon=False, return_latent=True, grad_to_input=True)
+            else:
+                latent_space = None
 
-            # Compute all losses
+            # Compute losses
             proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss_old(
-                yhat, latent_space, frames_batch, idx_batch, self.loss_weights
+                yhat_phys, latent_space, frames_phys, idx_batch, self.loss_weights
             )
 
-            # Total loss
             tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
 
             # Log losses
@@ -894,42 +1000,98 @@ class Tomography(dl.Application):
             # Backward
             tot_loss.backward()
 
-            # --- Manual parameter updates ---
             with torch.no_grad():
-                # dRI update (clipped)
-                self.volume -= self.lr_volume_manual * self.volume.grad
-                self.volume.clamp_(0., 1.)
 
-                if self.rotation_params.requires_grad == True:
-                    # Q update (renormalize quaternions)
-                    if self.rotation_optim_case == 'quaternion':
-                        self.rotation_params -= self.lr_q_manual * self.rotation_params.grad
-                        self.rotation_params[:] = self.rotation_params / self.rotation_params.norm(dim=1, keepdim=True)
+                # --- Update volume OR mus depending on regime ---
+                if getattr(self, "binarize_volume", False):
+                    # fluorescence: update mus (list of 3 Parameters)
+                    for p in self.mus:
+                        if p.grad is not None:
+                            p -= self.lr_volume_manual * p.grad
+                    # optional: clamp mus to stay inside volume bounds (voxel coords)
+                    # Note: mus are centered coordinates in your setup
+                    bound = min(self.nx, self.ny, self.nz) / 2
+                    for p in self.mus:
+                        p.clamp_(-bound, bound)
 
-                    # Q update (basis)
-                    elif self.rotation_optim_case == 'basis':
-                        self.rotation_params -= self.lr_q_manual * self.rotation_params.grad
-                        # Recompute quaternions from basis
-                        quaternions = self.get_quaternions(self.rotation_params)
-                        quaternions_norm = quaternions / quaternions.norm(dim=1, keepdim=True)
+                else:
+                    # brightfield/etc: update volume Parameter
+                    if hasattr(self, "volume") and self.volume.grad is not None:
+                        self.volume -= self.lr_volume_manual * self.volume.grad
+                        self.volume.clamp_(0.0, 1.0)
 
-                        # Generate the basis functions. Solve the least squares problem to find the coefficients
-                        coeffs = torch.linalg.lstsq(self.basis, quaternions_norm).solution
-                        # Update the rotation parameters with the new coefficients
-                        self.rotation_params.data = coeffs
+                # --- Rotation update ---
+                if self.rotation_params.requires_grad and self.rotation_params.grad is not None:
+                    self.rotation_params -= self.lr_q_manual * self.rotation_params.grad
 
-                if self.translation_params.requires_grad == True:
-                    # T update (translations)
+                    if self.rotation_optim_case == "quaternion":
+                        self.rotation_params[:] = self.rotation_params / (self.rotation_params.norm(dim=1, keepdim=True) + 1e-12)
+
+                    elif self.rotation_optim_case == "basis":
+                        # recompute coeffs safely without .data
+                        quats = self.get_quaternions(self.rotation_params)
+                        quats = quats / (quats.norm(dim=1, keepdim=True) + 1e-12)
+                        coeffs = torch.linalg.lstsq(self.basis, quats).solution
+                        self.rotation_params.copy_(coeffs)
+
+                # --- Translation update ---
+                if self.translation_params.requires_grad and self.translation_params.grad is not None:
                     self.translation_params -= self.lr_t_manual * self.translation_params.grad
 
-                # Zero gradients
-                self.volume.grad = None
-                self.rotation_params.grad = None
-                self.translation_params.grad = None
+                # --- Clear grads safely ---
+                if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter):
+                    self.volume.grad = None
+                if hasattr(self, "rotation_params"):
+                    self.rotation_params.grad = None
+                if hasattr(self, "translation_params"):
+                    self.translation_params.grad = None
+                if getattr(self, "binarize_volume", False):
+                    for p in self.mus:
+                        p.grad = None
 
-                return tot_loss
+            return tot_loss
         else:
             raise ValueError("Invalid automatic_optimization value. Must be True or False.")
+
+    def _prepare_for_vae(self, yhat):
+        """
+        Map yhat (B,C,H,W) to the VAE size (H_vae,W_vae) deterministically.
+        If yhat is larger -> center crop; if smaller -> pad.
+        """
+        B, C, H, W = yhat.shape
+        Ht, Wt = self.H_vae, self.W_vae
+
+        # If larger: crop centered
+        if H > Ht:
+            top = (H - Ht) // 2
+            yhat = yhat[:, :, top:top+Ht, :]
+        if W > Wt:
+            left = (W - Wt) // 2
+            yhat = yhat[:, :, :, left:left+Wt]
+
+        # If smaller: pad to target
+        if yhat.shape[2] < Ht or yhat.shape[3] < Wt:
+            yhat = self.pad_for_vae(yhat, Ht, Wt)
+
+        return yhat
+
+    def standardize_for_vae(self, x, eps=1e-6, clip=3.0):
+        # x: (B,C,H,W)
+        mean = x.mean(dim=(2,3), keepdim=True)
+        std = x.std(dim=(2,3), keepdim=True)
+        x = (x - mean) / (std + eps)
+        if clip is not None:
+            x = x.clamp(-clip, clip)
+        return x
+
+    def robust_standardize_for_vae(self, x, eps=1e-6, clip=8.0):
+        # x: (B,C,H,W)
+        med = x.median(dim=3, keepdim=True).values.median(dim=2, keepdim=True).values
+        mad = (x - med).abs().median(dim=3, keepdim=True).values.median(dim=2, keepdim=True).values
+        x = (x - med) / (1.4826 * mad + eps)
+        if clip is not None:
+            x = x.clamp(-clip, clip)
+        return x
 
     def pad_for_vae(self, tensor, H_padded, W_padded):
         """
@@ -949,6 +1111,24 @@ class Tomography(dl.Application):
         pad_left = pad_w // 2
         pad_right = pad_w - pad_left
         return F.pad(tensor, (pad_left, pad_right, pad_top, pad_bottom), mode='constant', value=0)
+
+    def center_crop_or_pad(self, x, Ht, Wt):
+        # x: (B,C,H,W)
+        B, C, H, W = x.shape
+
+        # center crop if too big
+        if H > Ht:
+            top = (H - Ht) // 2
+            x = x[:, :, top:top + Ht, :]
+        if W > Wt:
+            left = (W - Wt) // 2
+            x = x[:, :, :, left:left + Wt]
+
+        # pad if too small
+        if x.shape[2] < Ht or x.shape[3] < Wt:
+            x = self.pad_for_vae(x, Ht, Wt)
+
+        return x
 
     def unpad_to_original(self, tensor):
         """Crop tensor symmetrically back to original (unpadded) size."""
@@ -1003,7 +1183,8 @@ class Tomography(dl.Application):
 
         # === TV regularization on volume ===
         if self.volume.requires_grad:
-            rtv_loss = self.total_variation_regularization(self.volume)
+            vol_for_reg = self._get_volume_for_stage()
+            rtv_loss = self.total_variation_regularization(vol_for_reg)
         else:
             rtv_loss = torch.tensor(0.0, device=self._device)
 
@@ -1034,12 +1215,15 @@ class Tomography(dl.Application):
         proj_loss = self.projection_loss(yhat, frames_batch)
 
         # === Latent loss (MSE) ===
-        if self.loss_weights['latent_loss'] > 0:
+        if self.loss_weights['latent_loss'] > 0 and latent_space is not None:
             latent_loss = F.mse_loss(latent_space, self.latent[idx_batch])
+        else:
+            latent_loss = torch.tensor(0.0, device=self._device)
 
         # === TV regularization on volume ===
         if self.volume.requires_grad and self.loss_weights['rtv_loss'] > 0:
-            rtv_loss = self.total_variation_regularization(self.volume)
+            vol_for_reg = self._get_volume_for_stage()
+            rtv_loss = self.total_variation_regularization(vol_for_reg)
         else:
             rtv_loss = torch.tensor(0.0, device=self._device)
 
@@ -1067,7 +1251,8 @@ class Tomography(dl.Application):
 
         # === Strictly over loss on volume ===
         if self.volume.requires_grad and self.loss_weights['so_loss'] > 0:
-            so_loss = self.strictly_over_loss(self.volume, value=0)
+            vol_for_reg = self._get_volume_for_stage()
+            so_loss = self.strictly_over_loss(vol_for_reg, value=0)
         else:
             so_loss = torch.tensor(0.0, device=self._device)
 
@@ -1100,17 +1285,13 @@ class Tomography(dl.Application):
         Returns:
         - R_TV (float): The total variation regularization term.
         """
-        # Compute gradients and sum them inline to avoid intermediate tensors
-        # grad_x_sum = torch.sum(torch.abs(delta_n[1:, :, :] - delta_n[:-1, :, :]))  # Gradient in x-direction
-        # grad_y_sum = torch.sum(torch.abs(delta_n[:, 1:, :] - delta_n[:, :-1, :]))  # Gradient in y-direction
-        # grad_z_sum = torch.sum(torch.abs(delta_n[:, :, 1:] - delta_n[:, :, :-1]))  # Gradient in z-direction
-
+        # Compute gradients along each dimension
         grad_x = torch.diff(delta_n, dim=0, append=delta_n[-1, None])
         grad_y = torch.diff(delta_n, dim=1, append=delta_n[:, -1, None])
         grad_z = torch.diff(delta_n, dim=2, append=delta_n[:, :, -1, None])
 
         # Combine all gradient sums
-        R_TV = torch.sqrt(grad_x**2 + grad_y**2 + grad_z**2 + beta).sum() / delta_n.numel()#(grad_x_sum + grad_y_sum + grad_z_sum) / delta_n.numel()
+        R_TV = torch.sqrt(grad_x**2 + grad_y**2 + grad_z**2 + beta).sum() / delta_n.numel()
 
         return R_TV
 
@@ -1158,6 +1339,23 @@ class Tomography(dl.Application):
     def compute_binarization_loss(self, volume, λ_bin=1.0):
         return λ_bin * torch.mean(volume * (1 - volume))
 
+    def _prepare_frames_for_stage(self, frames_batch):
+        """
+        Make frames match the stage projection size (nx_s, ny_s).
+        Uses 'area' downsampling for stability.
+        """
+        if not self.stage_downsample_frames:
+            return frames_batch
+
+        nx_s, ny_s, _ = self._stage_shape
+        H, W = frames_batch.shape[2], frames_batch.shape[3]
+
+        if (H, W) == (nx_s, ny_s):
+            return frames_batch
+
+        # area downsample is usually best for measured images
+        return F.interpolate(frames_batch, size=(nx_s, ny_s), mode="area")
+
     def get_volume(self):
         """
         Get the volume from the volume parameters."""
@@ -1175,9 +1373,12 @@ class Tomography(dl.Application):
             volume = torch.sum(torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
 
             # Clamp volume to [0, 1]
-            #volume = torch.clamp(volume, 0, 1)
-            # Scale volume to [0, 1]
-            volume = (volume - volume.min()) / (volume.max() - volume.min() + 1e-6)
+            den = (volume.max() - volume.min())
+            if den.abs() < 1e-12:
+                # avoid 0/0 normalization; return tiny constant volume
+                return torch.zeros_like(volume)
+            
+            volume = (volume - volume.min()) / (den + 1e-6)
 
             # Normalize volume to have a fixed total sum
             # volume = volume / torch.sum(volume) #* self.n_spots / 2.0
@@ -1185,6 +1386,80 @@ class Tomography(dl.Application):
             return volume
         else:
             return self.volume
+
+    def _get_volume_for_stage(self):
+        vol = self.get_volume()  # (nx,ny,nz) full-res
+
+        # Differentiable blur: must be recomputed every step (cannot cache result)
+        if self.stage_blur_sigma > 0:
+            vol_use = self.gaussian_blur3d(vol, self.stage_blur_sigma)
+        else:
+            vol_use = vol
+
+        # downsample to stage shape
+        nx_s, ny_s, nz_s = self._stage_shape
+        if (nx_s, ny_s, nz_s) != tuple(vol_use.shape):
+            vol_s = F.interpolate(
+                vol_use[None, None],
+                size=(nx_s, ny_s, nz_s),
+                mode="trilinear",
+                align_corners=True,
+            )[0, 0]
+        else:
+            vol_s = vol_use
+
+        return vol_s
+
+    def gaussian_blur3d(self, volume, sigma):
+        """
+        Apply a 3D Gaussian blur to a volume using separable convolution.
+        
+        Args:
+            volume (torch.Tensor): (nx, ny, nz)
+            sigma (float): Gaussian std in voxel units
+        
+        Returns:
+            torch.Tensor: blurred volume, same shape
+        """
+
+        if sigma <= 0:
+            return volume
+
+        device = volume.device
+        dtype = volume.dtype
+
+        # --- kernel cache ---
+        if not hasattr(self, "_gaussian_kernel_cache"):
+            self._gaussian_kernel_cache = {}
+
+        key = (float(sigma), device.type, dtype)
+        if key in self._gaussian_kernel_cache:
+            kx, ky, kz = self._gaussian_kernel_cache[key]
+        else:
+            # kernel radius: 3 sigma is standard
+            radius = int(3 * sigma + 0.5)
+            coords = torch.arange(-radius, radius + 1, device=device, dtype=dtype)
+
+            kernel_1d = torch.exp(-(coords ** 2) / (2 * sigma ** 2))
+            kernel_1d = kernel_1d / kernel_1d.sum()
+
+            # reshape for separable conv
+            kx = kernel_1d.view(1, 1, -1, 1, 1)
+            ky = kernel_1d.view(1, 1, 1, -1, 1)
+            kz = kernel_1d.view(1, 1, 1, 1, -1)
+
+            self._gaussian_kernel_cache[key] = (kx, ky, kz)
+
+        # --- apply separable convolution ---
+        x = volume[None, None]  # (1,1,nx,ny,nz)
+
+        padding = [kx.shape[2] // 2, ky.shape[3] // 2, kz.shape[4] // 2]
+
+        x = F.conv3d(x, kx, padding=(padding[0], 0, 0))
+        x = F.conv3d(x, ky, padding=(0, padding[1], 0))
+        x = F.conv3d(x, kz, padding=(0, 0, padding[2]))
+
+        return x[0, 0]
 
     def get_translations(self, raw_translation):
 
@@ -1195,6 +1470,24 @@ class Tomography(dl.Application):
             return None
         else:
             return raw_translation
+
+    def _scale_translations_for_stage(self, translations, stage_shape):
+        """
+        translations: (B,3) in voxel units of full resolution (nx,ny,nz)
+        returns: (B,3) in voxel units of stage resolution
+        """
+        if translations is None:
+            return None
+
+        nx, ny, nz = self.volume_size
+        sx, sy, sz = stage_shape
+
+        scale = torch.tensor(
+            [sx / nx, sy / ny, sz / nz],
+            device=translations.device,
+            dtype=translations.dtype,
+        )
+        return translations * scale[None]
 
     def get_quaternions(self, rotations=None):
         """
@@ -1330,6 +1623,96 @@ class Tomography(dl.Application):
 
         # Return rotated volumes as (B, D, H, W)
         return transformed.squeeze(1)
+
+    def _get_grid_batch(self, nx, ny, nz, device):
+        key = (nx, ny, nz, device.type)
+        if key in self._grid_cache:
+            return self._grid_cache[key]
+
+        lin_x = torch.linspace(-1, 1, nx, device=device)
+        lin_y = torch.linspace(-1, 1, ny, device=device)
+        lin_z = torch.linspace(-1, 1, nz, device=device)
+        xx, yy, zz = torch.meshgrid(lin_x, lin_y, lin_z, indexing="ij")
+        grid_batch = torch.stack([xx, yy, zz], dim=-1).view(-1, 3)  # (N,3)
+
+        self._grid_cache[key] = grid_batch
+        return grid_batch
+
+
+    def apply_rotation_batch_stage(self, volume, quaternions, translations=None):
+        """
+        Like apply_rotation_batch, but uses a grid computed for the *current* stage shape.
+        volume: (nx_s, ny_s, nz_s)
+        quaternions: (B,4)
+        translations: (B,3) in voxel units for that stage shape
+        returns: (B, nx_s, ny_s, nz_s)
+        """
+        device = volume.device
+
+        # volume to (B,1,D,H,W) where D=nx_s, H=ny_s, W=nz_s in your convention
+        vol = volume[None, None]  # (1,1,nx,ny,nz)
+        B = quaternions.shape[0]
+        volB = vol.expand(B, -1, -1, -1, -1)
+
+        _, _, D, H, W = volB.shape  # D=nx_s, H=ny_s, W=nz_s
+
+        # rotation matrices
+        R = self.quaternion_to_rotation_matrix_batch(quaternions)  # (B,3,3)
+
+        # stage grid
+        grid = self._get_grid_batch(D, H, W, device).unsqueeze(0).expand(B, -1, -1).clone()  # (B,N,3)
+
+        # translation (voxel -> normalized coords) if provided
+        if translations is not None:
+            t = translations
+            t_norm = torch.empty_like(t)
+            t_norm[:, 0] = 2 * t[:, 0] / (D - 1 + 1e-12)
+            t_norm[:, 1] = 2 * t[:, 1] / (H - 1 + 1e-12)
+            t_norm[:, 2] = 2 * t[:, 2] / (W - 1 + 1e-12)
+            grid = grid - t_norm[:, None, :]
+
+        # rotate
+        rotated_grid = torch.bmm(grid, R.transpose(1, 2))  # (B,N,3)
+        rotated_grid = rotated_grid.view(B, D, H, W, 3).clamp(-1, 1)
+
+        # sample
+        out = F.grid_sample(volB, rotated_grid, align_corners=True)  # (B,1,D,H,W)
+        return out.squeeze(1)
+
+    def _make_imaging_model_for_shape(self, shape_xyz, **optics_kwargs):
+        # shape_xyz is (nx, ny, nz)
+        optics_setup = setup_optics(
+            shape=shape_xyz,
+            microscopy_regime=self.imaging_model.microscopy_regime,
+            **optics_kwargs,
+        )
+        model = imaging_model(optics_setup).to(self._device)
+        return model
+
+
+    def set_stage(self, scale=1.0, blur_sigma=0.0, use_latent=True, stage_name=None, **optics_kwargs):
+        self.stage_scale = float(scale)
+        self.stage_blur_sigma = float(blur_sigma)
+        self.stage_use_latent = bool(use_latent)
+
+        nx, ny, nz = self.volume_size
+        nx_s = max(8, int(round(nx * self.stage_scale)))
+        ny_s = max(8, int(round(ny * self.stage_scale)))
+        nz_s = max(8, int(round(nz * self.stage_scale)))
+        stage_shape = (nx_s, ny_s, nz_s)
+
+        # Cache key includes regime + stage shape + optics kwargs
+        key = (self.imaging_model.microscopy_regime, stage_shape, tuple(sorted(optics_kwargs.items())))
+
+        if key != self._current_stage_key:
+            if key not in self._imaging_model_cache:
+                self._imaging_model_cache[key] = self._make_imaging_model_for_shape(stage_shape, **optics_kwargs)
+            self.imaging_model_stage = self._imaging_model_cache[key]
+            self._current_stage_key = key
+
+        self._stage_shape = stage_shape
+        self._stage_name = stage_name or f"scale{self.stage_scale}"
+
 
     def full_forward_final(self, max_projections=None, rand_idx=False, idx=None):
         """
@@ -1583,6 +1966,38 @@ class Tomography(dl.Application):
             quats_corrected.append(torch.tensor([w, x, y, z]))
 
         return torch.stack(quats_corrected)
+
+    def set_stages(self, stages: Sequence[StageSpec]):
+        self.stages = list(stages)
+        self.stage_idx = 0
+        self.stage_step = 0
+        self._apply_current_stage()
+
+    def _apply_current_stage(self):
+        if not self.stages:
+            self.set_stage(scale=1.0, blur_sigma=0.0, use_latent=True, stage_name="full")
+            return
+
+        st = self.stages[self.stage_idx]
+        optics_kwargs = st.optics_kwargs or {}
+        self.stage_downsample_frames = st.downsample_frames
+        self.set_stage(
+            scale=st.scale,
+            blur_sigma=st.blur_sigma,
+            use_latent=st.use_latent,
+            stage_name=st.name,
+            **optics_kwargs
+        )
+
+    def advance_stage_if_needed(self, steps_per_stage: Sequence[int]):
+        if not self.stages:
+            return
+        self.stage_step += 1
+        if self.stage_idx < len(steps_per_stage) and self.stage_step >= steps_per_stage[self.stage_idx]:
+            if self.stage_idx < len(self.stages) - 1:
+                self.stage_idx += 1
+                self.stage_step = 0
+                self._apply_current_stage()
 
 # Testing the code
 if __name__ == "__main__":
