@@ -760,9 +760,9 @@ def compute_angles_from_peaks(
     peak_values = cc[peaks]
     med_peak_value = np.median(peak_values)
     filtered_peaks = [] 
-    for pk in peak_values:
+    for i, pk in enumerate(peak_values):
         if pk >= 0.66 * med_peak_value:
-            filtered_peaks.append(pk)
+            filtered_peaks.append(peaks[i])
     peaks = np.array(filtered_peaks)
 
     if len(peaks) < 2:
@@ -776,16 +776,20 @@ def compute_angles_from_peaks(
     else:
         raise ValueError("rotation_period must be either 'pi' or '2pi'.")
 
-    angles = torch.zeros(n_frames)
+    angles = torch.zeros(n_frames, dtype=torch.float32)
+
+    # If the first peak is not at index 0, we can optionally set it to 0 or just start from the first detected peak
+    if peaks[0] != 0:
+        peaks = np.insert(peaks, 0, 0)  # Ensure first peak at index 0
 
     # Assign continuous angles between peaks
     for i, pk in enumerate(peaks):
-        if i == 0:
-            start, end = 0, pk
-            angles[start:end] = torch.linspace(0, delta_angle, end - start)
-        else:
+        angles[pk] = i * delta_angle
+        if i > 0:
             start, end = peaks[i - 1], pk
-            angles[start:end] = torch.linspace(delta_angle * (i - 1), delta_angle * i, end - start)
+            if end > start:
+                angles[start:end] = torch.linspace(angles[start], angles[end], end - start)
+
 
     # Extend beyond last peak if needed
     last_pk = peaks[-1]
