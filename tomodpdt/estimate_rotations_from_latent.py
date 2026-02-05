@@ -403,12 +403,21 @@ def process_cross_correlation(
     # Keep track of device    
     device = frames.device
 
-    # Unwrap phases
-    frames = unwrap_phase_batch(frames)
-    frames = torch.tensor(frames, dtype=torch.float32)
+    if frames.shape[1] == 1:
+        # use simple normalized correlation to first frame
+        x0 = frames[0, 0]
+        cc = []
+        for i in range(frames.shape[0]):
+            xi = frames[i, 0]
+            cc.append(torch.mean((x0 - x0.mean()) * (xi - xi.mean())) / (x0.std()*xi.std() + 1e-6))
+        cc = torch.stack(cc)
+    else:
+        # Unwrap phases
+        frames = unwrap_phase_batch(frames)
+        frames = torch.tensor(frames, dtype=torch.float32)
 
-    # Compute cross-correlation series
-    cc = compute_cc_series(frames, normalize=normalize)
+        # Compute cross-correlation series
+        cc = compute_cc_series(frames, normalize=normalize)
 
     # Smooth cross-correlation series
     try:
@@ -616,7 +625,7 @@ def classify_rotation_axis(flow_vectors):
         return "y"  # Vertical rotation
 
 
-def unwrap_phase_batch(E_batch):
+def unwrap_phase_batch_old(E_batch):
     """
     Unwrap the phase for a batch of complex images.
     
@@ -635,6 +644,33 @@ def unwrap_phase_batch(E_batch):
     E_batch = E_batch.type(torch.complex64)
 
     return [unwrap_phase(torch.angle(E).cpu().numpy()) for E in E_batch]
+
+
+def unwrap_phase_batch(E_batch):
+    """
+    E_batch: torch.Tensor of shape (T,2,H,W) representing complex (real, imag)
+             OR complex torch tensor (T,H,W)
+    returns: torch.Tensor (T,H,W) float32
+    """
+    device = E_batch.device if isinstance(E_batch, torch.Tensor) else "cpu"
+
+    # convert 2-channel real/imag -> complex numpy
+    if isinstance(E_batch, torch.Tensor) and E_batch.dim() == 4 and E_batch.size(1) == 2:
+        E = (E_batch[:, 0] + 1j * E_batch[:, 1]).detach().cpu().numpy()
+    elif isinstance(E_batch, torch.Tensor) and torch.is_complex(E_batch):
+        E = E_batch.detach().cpu().numpy()
+    else:
+        # already numpy or something
+        E = np.asarray(E_batch)
+
+    # unwrap each frame’s phase
+    out = []
+    for k in range(E.shape[0]):
+        ph = np.angle(E[k])
+        out.append(unwrap_phase(ph))
+    out = np.stack(out, axis=0)
+
+    return torch.tensor(out, dtype=torch.float32, device=device)
 
 
 def cross_correlation_2d(a, b):
@@ -734,9 +770,9 @@ def compute_angles_from_peaks(
 
     # Choose angular increment based on model
     if rotation_period.lower() == "pi":
-        delta_angle = np.pi
+        delta_angle = torch.pi
     elif rotation_period.lower() == "2pi":
-        delta_angle = 2 * np.pi
+        delta_angle = 2 * torch.pi
     else:
         raise ValueError("rotation_period must be either 'pi' or '2pi'.")
 

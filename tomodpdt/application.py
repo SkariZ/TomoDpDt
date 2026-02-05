@@ -5,6 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, TensorDataset
+from lightning.pytorch.callbacks import Callback
 
 from typing import Optional, Sequence
 import time
@@ -89,7 +90,7 @@ class Tomography(dl.Application):
     learning_rate_volume : float, optional
         Learning rate for volume parameters (default: 8e-4).
     learning_rate_rotation : float, optional
-        Learning rate for rotation parameters (default: 5e-4).
+        Learning rate for rotation parameters (default: 5e-3).
     learning_rate_translation : float, optional
         Learning rate for translation parameters (default: 1e-3).
     automatic_optimization : bool, optional
@@ -149,7 +150,7 @@ class Tomography(dl.Application):
                  loss_weights = None,
                  loss_weights_manual = None,
                  learning_rate_volume: float = 8e-4,
-                 learning_rate_rotation: float = 5e-4,
+                 learning_rate_rotation: float = 5e-3,
                  learning_rate_translation: float = 1e-3,
                  automatic_optimization: bool = True,
                  **kwargs):
@@ -195,7 +196,7 @@ class Tomography(dl.Application):
 
         # Set the loss weights for standard optimization
         self.loss_weights = loss_weights if loss_weights is not None else {
-            'proj_loss': 2.0,
+            'proj_loss': 4.0,
             'latent_loss': 0.1,
             'rtv_loss': 7.0,
             'qv_loss': 0.2,
@@ -254,7 +255,7 @@ class Tomography(dl.Application):
         # Flag to enable/disable on_train_batch_end operations
         self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
         self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
-        self.smooth_startup = kwargs.get('smooth_startup', True) if automatic_optimization else False
+        self.smooth_startup = False #kwargs.get('smooth_startup', True) if automatic_optimization else False
         self.smooth_startup_rotations = kwargs.get('smooth_startup_rotations', 100) if automatic_optimization else 0
         self.smooth_startup_translations = kwargs.get('smooth_startup_translations', 200) if automatic_optimization else 0
 
@@ -310,6 +311,7 @@ class Tomography(dl.Application):
         self.stages: Optional[list[StageSpec]] = None
         self.stage_idx: int = 0
         self.stage_step: int = 0  # step counter inside stage
+        self.steps_per_stage = None  # or []
 
     def initialize_parameters(self, projections, **kwargs):
         """
@@ -370,7 +372,7 @@ class Tomography(dl.Application):
                 input_shape=(self.CH, self.H_vae, self.W_vae),
                 latent_dim=2,
                 output_activation="linear",
-                dropout=0.05,
+                dropout=0.025,
             )
             self.vae_model.encoder = vae.encoder
             self.vae_model.decoder = vae.decoder
@@ -528,37 +530,31 @@ class Tomography(dl.Application):
     def configure_optimizers(self):
         param_groups = []
 
-        # --- Volume parameters ---
+        # Volume
         if getattr(self, "binarize_volume", False):
-            param_groups.append({
-                "params": self.mus,
-                "lr": self.learning_rate_volume
-            })
+            params = list(self.mus)
+            params.append(self.amps_raw)
+            param_groups.append({"params": params, "lr": self.learning_rate_volume})
+
         else:
-            if hasattr(self, "volume") and self.volume.requires_grad:
-                param_groups.append({'params': [self.volume], 'lr': self.learning_rate_volume})
+            if hasattr(self, "volume"):
+                param_groups.append({"params": [self.volume], "lr": self.learning_rate_volume})
 
-        # --- Rotation parameters ---
-        if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
-            param_groups.append({'params': [self.rotation_params], 'lr': self.learning_rate_rotation})
+        # ALWAYS include rotation + translation if they exist
+        if hasattr(self, "rotation_params"):
+            param_groups.append({"params": [self.rotation_params], "lr": self.learning_rate_rotation})
 
-        # --- Translation parameters ---
-        if hasattr(self, "translation_params") and self.translation_params.requires_grad:
-            param_groups.append({'params': [self.translation_params], 'lr': self.learning_rate_translation})
-
-        # --- Sanity check ---
-        if not param_groups:
-            raise ValueError("No parameters to optimize. Check requires_grad flags.")
+        if hasattr(self, "translation_params"):
+            param_groups.append({"params": [self.translation_params], "lr": self.learning_rate_translation})
 
         optimizer = torch.optim.Adam(param_groups)
 
         scheduler = {
-            'scheduler': torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode='min', factor=0.75, patience=20, threshold=1e-3, min_lr=5e-7
+            "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
+                optimizer, mode="min", factor=0.7, patience=20, threshold=1e-3, min_lr=5e-7
             ),
-            'monitor': 'train_total_loss',
+            "monitor": "train_total_loss",
         }
-
         return [optimizer], [scheduler]
 
     def compute_global_min_max(self, projections):
@@ -633,7 +629,7 @@ class Tomography(dl.Application):
             logger=False,
             enable_checkpointing=False,
             enable_model_summary=False,
-            log_every_n_steps=0,
+            log_every_n_steps=999999,
             enable_progress_bar=True,
         )
         trainer.fit(self.vae_model, data_loader)
@@ -730,6 +726,9 @@ class Tomography(dl.Application):
                 nn.Parameter(mus[:, 1]),
                 nn.Parameter(mus[:, 2]),
             ]
+
+            # Initialize amplitudes for each Gaussian spot (optional, can be learned or fixed)
+            self.amps_raw = nn.Parameter(torch.zeros(self.n_spots, device=self._device))
 
             # Compute Gaussian cloud volume
             dx = xx[None] - self.mus[0][:, None, None, None]
@@ -855,6 +854,10 @@ class Tomography(dl.Application):
         Training step for the model. Computes the loss and logs it.
         """
 
+         # ---- stage progression ----
+        if self.steps_per_stage is not None:
+            self.advance_stage_if_needed(self.steps_per_stage)
+
         # Get indices and corresponding frames
         idx_batch = batch
         frames_batch = self.frames[idx_batch]
@@ -864,6 +867,7 @@ class Tomography(dl.Application):
             if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
                 frames_batch = self.unpad_to_original(frames_batch)
         
+        # Apply stage-specific frame preprocessing (e.g., downsampling, blurring)
         frames_batch = self._prepare_frames_for_stage(frames_batch)
 
         if self.smooth_startup:
@@ -902,8 +906,9 @@ class Tomography(dl.Application):
                 latent_space = None
 
             # Compute losses
+            lw = getattr(self, "_stage_loss_weights", self.loss_weights)
             proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss = self.compute_loss_old(
-                yhat_phys, latent_space, frames_phys, idx_batch, self.loss_weights
+                yhat_phys, latent_space, frames_phys, idx_batch, lw
             )
 
             tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
@@ -921,34 +926,43 @@ class Tomography(dl.Application):
             }
 
             # Binarization loss for fluorescence regime
-            if self.imaging_model.microscopy_regime == 'fluorescence':
+            if self.imaging_model.microscopy_regime == "fluorescence":
 
-                # Update sigma every 50 steps
-                if self.global_step % 50 == 0 and self.global_step > 0 and self.sigma < 1.25:
-                    self.sigma = self.sigma * self.sigma_update
+                # Update sigma every 50 steps (optionally stage-aware)
+                step = getattr(self, "stage_step", self.global_step)
+                if step % 50 == 0 and step > 0 and self.sigma < 1.25:
+                    self.sigma *= self.sigma_update
 
-                # Recompute projection loss for fluorescence regime
-                tot_loss = tot_loss - proj_loss  # Remove projection loss
-                proj_loss_fluorescence = self.projection_loss_fluorescence(yhat, frames_batch) * self.loss_weights['proj_loss']
-                tot_loss += proj_loss_fluorescence
+                # Remove non-fluorescence losses from total
+                tot_loss = tot_loss - proj_loss - rtv_loss - so_loss
+                for k in ["proj_loss", "rtv_loss", "so_loss", "total_loss"]:
+                    if k in loss_dict:
+                        del loss_dict[k]
 
-                # Remove old proj_loss and add new one
-                del loss_dict["proj_loss"]
+                # Robust projection loss (use *_phys if you normalize fluorescence)
+                resid = yhat - frames_batch
+                proj_loss_fluorescence = self.charbonnier(resid, eps=1e-3).mean() * self.loss_weights["proj_loss"]
                 loss_dict["proj_loss"] = proj_loss_fluorescence
 
-                volume = self.get_volume()
-                binarization_loss = self.compute_binarization_loss(volume) * self.loss_weights['binarization_loss']
-                tot_loss += binarization_loss
-                loss_dict["binarization_loss"] = binarization_loss
+                # Amplitude sparsity (if amps exist)
+                if hasattr(self, "amps_raw"):
+                    amps = F.softplus(self.amps_raw)
+                    amp_sparse = amps.mean() * 1e-3
+                else:
+                    amp_sparse = torch.tensor(0.0, device=self._device)
+                loss_dict["amp_sparse"] = amp_sparse
 
-                # Compute RTV loss for fluorescence regime
+                # Binarization + RTV-like
+                volume = self.get_volume()
+                binarization_loss = self.compute_binarization_loss(volume) * self.loss_weights["binarization_loss"]
                 rtv_loss_fluorescence = self.rtv_loss_fluorescence(volume) * 1e-4
-                tot_loss += rtv_loss_fluorescence
+
+                loss_dict["binarization_loss"] = binarization_loss
                 loss_dict["rtv_loss_fluorescence"] = rtv_loss_fluorescence
 
-                # Update total loss in the dictionary
-                del loss_dict["total_loss"]
+                tot_loss = tot_loss + proj_loss_fluorescence + amp_sparse + binarization_loss + rtv_loss_fluorescence
                 loss_dict["total_loss"] = tot_loss
+
 
             # Only keep non-zero losses
             loss_dict = {k: v for k, v in loss_dict.items() if v.item() > 0}
@@ -1052,6 +1066,9 @@ class Tomography(dl.Application):
             return tot_loss
         else:
             raise ValueError("Invalid automatic_optimization value. Must be True or False.")
+
+    def charbonnier(self, x, eps=1e-3):
+        return torch.sqrt(x*x + eps*eps)
 
     def _prepare_for_vae(self, yhat):
         """
@@ -1164,6 +1181,34 @@ class Tomography(dl.Application):
 
         return torch.abs(f_norm-y_norm).mean()
     
+    def projection_loss_fluorescence_scaled(self, yhat, frames, eps=1e-8, add_bias=False):
+        """
+        Solve alpha (and optionally bias) per-sample to best match frames.
+        Keeps gradients w.r.t yhat (alpha is computed from yhat & frames).
+        """
+        B = yhat.shape[0]
+        y = yhat.reshape(B, -1)
+        f = frames.reshape(B, -1)
+
+        if add_bias:
+            # solve [alpha, b] in least squares: alpha*y + b ~ f
+            ones = torch.ones_like(y[:, :1])
+            A = torch.cat([y, ones], dim=1)  # (B, N+1)
+            # closed form with normal equations per batch (small (N+1)x(N+1) is too big), so do 2-parameter formula:
+            y_mean = y.mean(dim=1, keepdim=True)
+            f_mean = f.mean(dim=1, keepdim=True)
+            y0 = y - y_mean
+            f0 = f - f_mean
+            alpha = (y0*f0).sum(dim=1, keepdim=True) / (y0*y0).sum(dim=1, keepdim=True).clamp_min(eps)
+            bias = f_mean - alpha*y_mean
+            pred = alpha*y + bias
+        else:
+            alpha = (y*f).sum(dim=1, keepdim=True) / (y*y).sum(dim=1, keepdim=True).clamp_min(eps)
+            pred = alpha*y
+
+        # MAE or MSE; MAE is fine
+        return (pred - f).abs().mean()
+
     def rtv_loss_fluorescence(self, volume):
         """
         Compute the RTV loss for fluorescence regime.
@@ -1258,13 +1303,13 @@ class Tomography(dl.Application):
 
         # === Scale the losses ===
         if loss_weights is not None and isinstance(loss_weights, dict):
-            proj_loss *= self.loss_weights['proj_loss']
-            latent_loss *= self.loss_weights['latent_loss']
-            rtv_loss *= self.loss_weights['rtv_loss']
-            qv_loss *= self.loss_weights['qv_loss']
-            q0_loss *= self.loss_weights['q0_loss']
-            rtr_loss *= self.loss_weights['rtr_loss']
-            so_loss *= self.loss_weights['so_loss']
+            proj_loss   = proj_loss   * float(loss_weights.get("proj_loss", 1.0))
+            latent_loss = latent_loss * float(loss_weights.get("latent_loss", 0.0))
+            rtv_loss    = rtv_loss    * float(loss_weights.get("rtv_loss", 0.0))
+            qv_loss     = qv_loss     * float(loss_weights.get("qv_loss", 0.0))
+            q0_loss     = q0_loss     * float(loss_weights.get("q0_loss", 0.0))
+            rtr_loss    = rtr_loss    * float(loss_weights.get("rtr_loss", 0.0))
+            so_loss     = so_loss     * float(loss_weights.get("so_loss", 0.0))
 
         return proj_loss, latent_loss, rtv_loss, qv_loss, q0_loss, rtr_loss, so_loss
 
@@ -1370,7 +1415,12 @@ class Tomography(dl.Application):
             dy = yy[None] - self.mus[1][:, None, None, None]
             dz = zz[None] - self.mus[2][:, None, None, None]
 
-            volume = torch.sum(torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
+            #volume = torch.sum(torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
+            amps = F.softplus(self.amps_raw)  # (n_spots,) positive
+            volume = torch.sum(
+                amps[:, None, None, None] * torch.exp(- self.sigma * (dx**2 + dy**2 + dz**2)),
+                dim=0
+            )
 
             # Clamp volume to [0, 1]
             den = (volume.max() - volume.min())
@@ -1713,6 +1763,9 @@ class Tomography(dl.Application):
         self._stage_shape = stage_shape
         self._stage_name = stage_name or f"scale{self.stage_scale}"
 
+    def set_stage_schedule(self, steps_per_stage):
+        # e.g. [200, 400, 999999]
+        self.steps_per_stage = list(map(int, steps_per_stage))
 
     def full_forward_final(self, max_projections=None, rand_idx=False, idx=None):
         """
@@ -1989,6 +2042,29 @@ class Tomography(dl.Application):
             **optics_kwargs
         )
 
+        # --- freeze/unfreeze params by stage name ---
+        name = st.name.lower()
+
+        # default: train everything
+        self.toggle_gradients_volume(True)
+        self.toggle_gradients_quaternion(True)
+        self.toggle_gradients_translation(True)
+
+        if "vol" in name and "rot" not in name:
+            # Stage A: volume only
+            self.toggle_gradients_quaternion(False)
+            self.toggle_gradients_translation(False)
+
+        elif "rot" in name and "trans" not in name:
+            # Stage B: volume + rotations
+            self.toggle_gradients_translation(False)
+
+        # per-stage loss weights override
+        if st.loss_weights is not None:
+            self._stage_loss_weights = {**self.loss_weights, **st.loss_weights}
+        else:
+            self._stage_loss_weights = self.loss_weights
+
     def advance_stage_if_needed(self, steps_per_stage: Sequence[int]):
         if not self.stages:
             return
@@ -1998,6 +2074,50 @@ class Tomography(dl.Application):
                 self.stage_idx += 1
                 self.stage_step = 0
                 self._apply_current_stage()
+
+
+class StageScheduler(Callback):
+    """
+    Advances Tomography stages during Lightning training.
+    - steps_per_stage: list[int] = how many TRAINING STEPS to run in each stage.
+      Example: [300, 700, 2000] => stage0 for 300 steps, stage1 for next 700, stage2 for next 2000.
+    """
+    def __init__(self, steps_per_stage):
+        super().__init__()
+        self.steps_per_stage = list(steps_per_stage)
+
+    def on_train_start(self, trainer, pl_module):
+        # store on module so training_step can see it (optional)
+        pl_module.steps_per_stage = self.steps_per_stage
+        pl_module._stage_global_step0 = trainer.global_step  # baseline
+        pl_module._apply_current_stage()  # ensure stage 0 applied
+        print(f"[StageScheduler] start -> stage {pl_module.stage_idx}: {pl_module._stage_name}")
+
+    def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
+        # advance based on TRAINING STEPS (trainer.global_step increments each optimizer step)
+        base = getattr(pl_module, "_stage_global_step0", 0)
+        step_in_run = trainer.global_step - base
+
+        # figure out which stage we should be in
+        cum = 0
+        new_stage_idx = 0
+        for i, n in enumerate(self.steps_per_stage):
+            cum += int(n)
+            if step_in_run < cum:
+                new_stage_idx = i
+                break
+        else:
+            new_stage_idx = len(self.steps_per_stage) - 1
+
+        # change stage if needed
+        if new_stage_idx != pl_module.stage_idx:
+            pl_module.stage_idx = new_stage_idx
+            pl_module.stage_step = 0
+            pl_module._apply_current_stage()
+            print(f"[StageScheduler] step {trainer.global_step} -> stage {pl_module.stage_idx}: {pl_module._stage_name}")
+
+        # keep a per-stage counter if you want it
+        pl_module.stage_step += 1
 
 # Testing the code
 if __name__ == "__main__":
