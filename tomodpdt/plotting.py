@@ -490,7 +490,7 @@ class TomoPlotter:
         r_idx = torch.randint(0, self.tomo.frames.shape[0], (12,))
 
         if pred is None:
-            if not forward:
+            if not forward and self.tomo.vae_success:
                 pred = self.tomo.vae_forward(x=self.tomo.frames[r_idx], return_latent=False).cpu().numpy()
 
                 # Ground truth frames(cropped if needed and preprocessed)

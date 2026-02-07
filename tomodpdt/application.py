@@ -199,7 +199,7 @@ class Tomography(dl.Application):
             'proj_loss': 4.0,
             'latent_loss': 0.1,
             'rtv_loss': 7.0,
-            'qv_loss': 0.2,
+            'qv_loss': 0.0, 
             'q0_loss': 0.2,
             'rtr_loss': 5.0,
             'so_loss': 100.0,
@@ -285,7 +285,7 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
 
             self.sigma = 0.4
-            self.n_spots = 15#20
+            self.n_spots = 20
 
             self.mesh = [
                 xx.to(self._device),
@@ -372,7 +372,7 @@ class Tomography(dl.Application):
                 input_shape=(self.CH, self.H_vae, self.W_vae),
                 latent_dim=2,
                 output_activation="linear",
-                dropout=0.025,
+                dropout=0.05,
             )
             self.vae_model.encoder = vae.encoder
             self.vae_model.decoder = vae.decoder
@@ -422,6 +422,7 @@ class Tomography(dl.Application):
                         self.train_vae(projections_vae, max_epochs=total_epochs, batch_size=32)
 
                     # trainer might leave it on CPU
+                    self.vae_model.train()
                     self.vae_model.to(self._device)
                     self.encoder = self.vae_model.encoder.to(self._device)
                     self.fc_mu = self.vae_model.fc_mu.to(self._device)
@@ -503,7 +504,11 @@ class Tomography(dl.Application):
 
         # Throw error if automatic_optimizations is True but VAE training is skipped
         if self.automatic_optimization and not vae_success:
-            raise RuntimeError("VAE training is required for automatic optimization.")
+            self.stage_use_latent = False
+            print("⚠️ Warning: Automatic optimization enabled but VAE training failed. Latent-based perceptual loss will be disabled.")
+
+
+        self.vae_success = vae_success  # Store VAE success status for later use
 
         # -------------------------------------------------------
         # --- 6. Initialize volume
@@ -519,6 +524,13 @@ class Tomography(dl.Application):
         # --- 8. Restore self.frames to ORIGINAL (unpadded) shape
         # -------------------------------------------------------
         self.frames = projections_orig[:N_frames_needed].to(self._device)
+
+        # Make sure the rotation parameters are the same shape as the number of frames we have, if not trim
+        if self.rotation_params.shape[0] != self.frames.shape[0] and self.rotation_optim_case == 'quaternion':
+            self.rotation_params = nn.Parameter(self.rotation_params[:N_frames_needed])
+
+        elif self.rotation_params.shape[0] != self.frames.shape[0] and self.rotation_optim_case == 'basis':
+            self.basis = self.basis[:N_frames_needed]
         
         # -------------------------------------------------------
         # --- 9. Optional optimizer registration
@@ -551,7 +563,7 @@ class Tomography(dl.Application):
 
         scheduler = {
             "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=0.7, patience=20, threshold=1e-3, min_lr=5e-7
+                optimizer, mode="min", factor=0.7, patience=20, threshold=2e-3, min_lr=5e-7
             ),
             "monitor": "train_total_loss",
         }
@@ -613,6 +625,12 @@ class Tomography(dl.Application):
             max_epochs = kwargs['max_epochs']
         else:
             max_epochs = 500
+
+        # Make sure projections are on the right device
+        projections = projections.to(self._device)
+
+        # Move VAE model to the right device        
+        self.vae_model.to(self._device)
 
         # Data loader for the VAE model x=projections and y=projections
         data_loader = DataLoader(
@@ -870,6 +888,7 @@ class Tomography(dl.Application):
         # Apply stage-specific frame preprocessing (e.g., downsampling, blurring)
         frames_batch = self._prepare_frames_for_stage(frames_batch)
 
+        # smooth startup: freeze rotation and translation parameters for the first N steps to let the volume find a good initial shape
         if self.smooth_startup:
             # If global_step is below 100 set the rotation_params to not require gradients
             if self.global_step < self.smooth_startup_rotations and self.rotation_params.requires_grad == True and self.rotation_params_flag == True:
@@ -900,7 +919,7 @@ class Tomography(dl.Application):
         if self.automatic_optimization == True:
 
             # VAE forward (with gradient to input for latent loss)
-            if self.stage_use_latent:
+            if self.stage_use_latent and self.vae_success:
                 latent_space = self.vae_forward(yhat_for_vae, return_recon=False, return_latent=True, grad_to_input=True)
             else:
                 latent_space = None
@@ -1281,6 +1300,7 @@ class Tomography(dl.Application):
 
         # === q0 constraint loss (only if idx_batch contains 0) ===
         if self.rotation_params.requires_grad and torch.sum(idx_batch == 0) > 0 and self.loss_weights['q0_loss'] > 0:
+            quaternions_pred = self.get_quaternions(self.rotation_params)[idx_batch]
             q0_loss = self.q0_constraint_loss(
                 quaternions_pred[idx_batch == 0]
             )
@@ -1816,7 +1836,7 @@ class Tomography(dl.Application):
 
         return estimated_projections
     
-    def get_quaternions_final(self, rotations=None):
+    def get_quaternions_final(self, rotations=None, norm_start1=True):
         """
         Get quaternions from the rotation parameters.
         """
@@ -1826,12 +1846,20 @@ class Tomography(dl.Application):
 
         if self.rotation_optim_case == 'quaternion':
             rotations = rotations / rotations.norm(dim=-1, keepdim=True)
-            return rotations
+
         
         elif self.rotation_optim_case == 'basis':
             rotations = torch.matmul(self.basis.to(self._device), rotations)
             rotations = rotations / rotations.norm(dim=-1, keepdim=True)
-            return rotations
+
+        if norm_start1 and rotations.shape[0] > 0:
+            # align first quaternion to identity
+            P0 = rotations[0]
+            q_rel = self.quat_conjugate(P0.unsqueeze(0))
+            rotations = self.quat_multiply(q_rel, rotations)
+            rotations = rotations / rotations.norm(dim=-1, keepdim=True)
+
+        return rotations
         
     def get_translations_final(self, raw_translation=None):
         """
