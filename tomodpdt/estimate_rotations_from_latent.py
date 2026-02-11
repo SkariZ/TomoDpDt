@@ -880,6 +880,43 @@ def quaternions_from_angles(th, n_quaternions, axis='y'):
 
     return Q_start
 
+
+def swap_axis_case(quats: torch.Tensor, to_axis: str):
+    """
+    quats: (T,4) [w,x,y,z], where ONLY ONE of x/y/z is nonzero per row.
+    to_axis: "x" | "y" | "z"
+    Returns new quats with same w and same sin(theta/2) magnitude, but placed on chosen axis.
+    """
+    assert quats.ndim == 2 and quats.shape[1] == 4, "Expected (T,4) [w,x,y,z]"
+    assert to_axis in ("x", "y", "z")
+
+    q = quats.clone()
+
+    # find the current active axis per row (which of x,y,z is nonzero)
+    v = q[:, 1:]                     # (T,3)
+    amp = v.abs().amax(dim=1)        # (T,) magnitude of the active component (abs)
+    sign = v.sign()
+    # pick sign from whichever component is active (max abs)
+    idx = v.abs().argmax(dim=1)      # (T,)
+    s = sign[torch.arange(q.shape[0], device=q.device), idx]  # (T,)
+    s = torch.where(s == 0, torch.ones_like(s), s)            # avoid 0 sign
+
+    # make new xyz
+    v_new = torch.zeros_like(v)
+    j = {"x": 0, "y": 1, "z": 2}[to_axis]
+    v_new[:, j] = s * amp
+
+    q[:, 1:] = v_new
+    return q
+
+def make_3_axis_candidates(quats: torch.Tensor):
+    return {
+        "x": swap_axis_case(quats, "x"),
+        "y": swap_axis_case(quats, "y"),
+        "z": swap_axis_case(quats, "z"),
+    }
+
+
 def plot_signal_with_peaks(signal, peaks, title="", ylabel="signal"):
     """
     signal: (T,) torch or numpy

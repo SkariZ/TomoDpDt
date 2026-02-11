@@ -1,6 +1,8 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import time
+import numpy as np
 
 try:
     import tomodpdt.image_modalities_dt as dt
@@ -421,11 +423,6 @@ class PropagationImagingModel(nn.Module):
             (-1j * torch.tensor(self.nz * self.dz * self.k0 * self.n0, dtype=torch.float32, device=self.device))
         )
         return E * phase_term
-
-
-import time
-import numpy as np
-import torch
 
 def make_batch(vol_a: torch.Tensor, vol_b: torch.Tensor | None = None, n_a=8, n_b=8):
     vols = [vol_a for _ in range(n_a)]

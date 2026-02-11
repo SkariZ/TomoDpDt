@@ -78,7 +78,10 @@ def create_data(
             '1ax': R.generate_random_sinusoidal_quaternion,
             'smooth_varying': R.generate_smooth_varying_quaternion,
             'smooth_varying_random': R.generate_smooth_varying_quaternion,
-            'random_varying': R.generate_random_varying_quaternion
+            'random_varying': R.generate_random_varying_quaternion,
+            'integrated_angular': R.generate_integrated_angular_velocity_quaternion,
+            'ornstein_uhlenbeck': R.generate_ou_quaternion,
+            'axis_switching': R.generate_axis_switching_quaternion
         }
         if rotation_case not in rotation_fn_dict:
             raise ValueError(f'Unknown rotation case: {rotation_case}')

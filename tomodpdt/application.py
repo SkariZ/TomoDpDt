@@ -11,6 +11,8 @@ from typing import Optional, Sequence
 import time
 import numpy as np
 
+from tomodpdt.estimate_rotations_from_latent import initialize_basis_functions
+
 
 # Importing the necessary modules
 try: 
@@ -39,8 +41,10 @@ class StageSpec:
     # Optional per-stage overrides
     loss_weights: Optional[dict] = None
     optics_kwargs: Optional[dict] = None
+    lr_mult: Optional[dict] = None 
 
 class Sum3d2d(nn.Module):
+    shape_agnostic = True
     def __init__(self, dim=-1):
         self.dim = dim
         self.microscopy_regime = 'sum_projection'
@@ -169,6 +173,10 @@ class Tomography(dl.Application):
         # Set the imaging model (either passed as a module or projection function)
         self.imaging_model = imaging_model if imaging_model is not None else Sum3d2d(dim=-1)
         
+        # Optional factory to rebuild imaging model when stage shape changes
+        # Signature: factory(shape_xyz: tuple[int,int,int]) -> nn.Module
+        self.imaging_model_factory = kwargs.pop("imaging_model_factory", None)
+
         # Determine the device (cuda if available, else cpu)
         if torch.cuda.is_available():
             self._device = torch.device("cuda")
@@ -231,6 +239,14 @@ class Tomography(dl.Application):
         # This is the optimizer for the variational autoencoder
         self.optimizer = optimizer if optimizer is not None else Adam(lr=8e-3)
 
+        # Allow passing custom optimizer class and kwargs via kwargs in __init__
+        self.tomo_optimizer_cls = kwargs.pop("tomo_optimizer_cls", torch.optim.AdamW)
+        self.tomo_optimizer_kwargs = kwargs.pop("tomo_optimizer_kwargs", {"weight_decay": 0.0})
+        
+        # "logit" (bounded Δn) or "direct" (old behavior)
+        self.dn_param = kwargs.pop("dn_param", "direct")
+        self.dn_max = float(kwargs.pop("dn_max", 0.20))
+
         # Call the superclass constructor
         super().__init__(**kwargs)
 
@@ -253,11 +269,11 @@ class Tomography(dl.Application):
         self.automatic_optimization = automatic_optimization
 
         # Flag to enable/disable on_train_batch_end operations
-        self.on_train_batch_end_enabled = kwargs.get('on_train_batch_end_enabled', False)
-        self.on_train_epoch_end_enabled = kwargs.get('on_train_epoch_end_enabled', True)
+        self.on_train_batch_end_enabled = kwargs.pop('on_train_batch_end_enabled', True)
+        self.on_train_epoch_end_enabled = kwargs.pop('on_train_epoch_end_enabled', True)
         self.smooth_startup = False #kwargs.get('smooth_startup', True) if automatic_optimization else False
-        self.smooth_startup_rotations = kwargs.get('smooth_startup_rotations', 100) if automatic_optimization else 0
-        self.smooth_startup_translations = kwargs.get('smooth_startup_translations', 200) if automatic_optimization else 0
+        self.smooth_startup_rotations = kwargs.pop('smooth_startup_rotations', 100) if automatic_optimization else 0
+        self.smooth_startup_translations = kwargs.pop('smooth_startup_translations', 200) if automatic_optimization else 0
 
         # Flags to keep track of requires_grad status
         self.volume_flag = True
@@ -307,6 +323,8 @@ class Tomography(dl.Application):
         self._grid_cache = {}  # stage grids keyed by (nx, ny, nz, device)
         self._stage_shape = self.volume_size
         self._stage_name = "full"
+        self._stage_lr_mult = {"volume": 1.0, "rotation": 1.0, "translation": 1.0}
+        self._stage_loss_weights = self.loss_weights
 
         self.stages: Optional[list[StageSpec]] = None
         self.stage_idx: int = 0
@@ -525,6 +543,50 @@ class Tomography(dl.Application):
         # -------------------------------------------------------
         self.frames = projections_orig[:N_frames_needed].to(self._device)
 
+        # -------------------------------------------------------
+        # --- 9. Restore self.frames to ORIGINAL (unpadded) shape
+        # -------------------------------------------------------
+        # --- optional 3-axis sweep ---
+        if kwargs.get("axis_sweep", True):
+            steps = int(kwargs.get("axis_sweep_steps", 120))
+            score_batches = int(kwargs.get("axis_sweep_score_batches", 3))
+            train_rot = bool(kwargs.get("axis_sweep_train_rot", False))
+            batch_size = int(kwargs.get("axis_sweep_batch_size", 16))
+
+            q_init = self.rotation_initial_dict["quaternions"].to(self._device)
+            q_candidates = erfl.make_3_axis_candidates(q_init)  # {"x":..., "y":..., "z":...}
+
+            flag_backup = None
+            if self.rotation_optim_case != 'quaternion':
+                flag_backup = self.rotation_optim_case
+                self.rotation_optim_case = 'quaternion'  # temporarily switch to quaternion for sweep
+                # temporary set it as quaternions for the sweep, will be reset to basis after
+                with torch.no_grad():
+                    self.rotation_params = nn.Parameter(q_init.clone().to(self._device))
+
+            print("🔄 Starting axis sweep warmup...")
+            best_axis, scores = self._axis_sweep_warmup(
+                q_candidates=q_candidates,
+                steps=steps,
+                batch_size=batch_size,
+                score_batches=score_batches,
+                train_rot=train_rot,
+            )
+            print(f"✅ Axis sweep chose: {best_axis} | scores: {scores}")
+
+            # Update the rotation parameters to the best candidate from the sweep
+            self.rotation_initial_dict['quaternions'] = q_candidates[best_axis].cpu()  # update initial dict with best candidate
+
+            # If we switched to quaternion for the sweep but the original optimization case was basis, convert the best quaternion back to basis coefficients
+            if flag_backup is not None:
+                self.rotation_optim_case = flag_backup
+
+                # Restore the rotation parameters to the original parameterization if we switched it for the sweep
+                quaternions = self.rotation_params.detach()  # get the quaternions from the sweep
+                coeffs = erfl.initialize_basis_functions(self.basis, quaternions)
+                with torch.no_grad():
+                    self.rotation_params = nn.Parameter(coeffs.clone().to(self._device))
+
         # Make sure the rotation parameters are the same shape as the number of frames we have, if not trim
         if self.rotation_params.shape[0] != self.frames.shape[0] and self.rotation_optim_case == 'quaternion':
             self.rotation_params = nn.Parameter(self.rotation_params[:N_frames_needed])
@@ -533,37 +595,199 @@ class Tomography(dl.Application):
             self.basis = self.basis[:N_frames_needed]
         
         # -------------------------------------------------------
-        # --- 9. Optional optimizer registration
+        # --- 10. Optional optimizer registration
         # -------------------------------------------------------
         @self.optimizer.params
         def params(self):
             return self.parameters()
 
+    def _axis_sweep_warmup(self, q_candidates: dict, steps=200, batch_size=32, score_batches=5, train_rot=False):
+        """
+        Quick warmup for each axis candidate. Optimizes volume (and optionally rotations),
+        scores via mean projection loss on a few random minibatches.
+        Returns (best_key, scores_dict).
+        """
+        device = self._device
+        N = self.frames.shape[0]
+
+        # --- backup current state ---
+        q_backup = self.rotation_params.detach().clone()
+        t_backup = self.translation_params.detach().clone() if hasattr(self, "translation_params") else None
+        vol_backup = self.volume.detach().clone() if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter) else None
+
+        # We'll restore at the end, but during each candidate we start from SAME init volume
+        def reset_volume_like_backup():
+            if vol_backup is not None:
+                with torch.no_grad():
+                    self.volume.copy_(vol_backup)
+            else:
+                # if volume doesn't exist yet, initialize it
+                self.initialize_volume()
+
+        scores = {}
+
+        for key, qcand in q_candidates.items():
+            # reset volume each candidate so comparison is fair
+            reset_volume_like_backup()
+
+            # set rotations
+            with torch.no_grad():
+                q = qcand.to(device)
+                q = q / (q.norm(dim=-1, keepdim=True) + 1e-12)
+            self.rotation_params = nn.Parameter(q)
+
+            # freeze translation always
+            self.toggle_gradients_translation(False)
+
+            # warmup mode: volume only is usually best
+            self.toggle_gradients_volume(True)
+            self.toggle_gradients_quaternion(bool(train_rot))
+
+            # make a small optimizer for just what's trainable
+            params = []
+            if getattr(self, "binarize_volume", False):
+                if hasattr(self, "mus"):
+                    params += list(self.mus)
+                if hasattr(self, "amps_raw"):
+                    params.append(self.amps_raw)
+            else:
+                if hasattr(self, "volume") and isinstance(self.volume, nn.Parameter) and self.volume.requires_grad:
+                    params.append(self.volume)
+
+            if train_rot and hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
+                params.append(self.rotation_params)
+
+            opt = torch.optim.AdamW(params, lr=float(self.learning_rate_volume), weight_decay=0.0)
+
+            self.train()
+            for s in range(int(steps)):
+                idx = torch.randint(0, N, (min(batch_size, N),), device=device)
+
+                yhat = self.forward(idx)
+                frames = self.frames[idx]
+                frames = self._prepare_frames_for_stage(frames)
+
+                if self.normalize:
+                    frames = self.per_channel_normalization(frames)
+                    yhat = self.per_channel_normalization(yhat)
+
+                loss = self.projection_loss(yhat, frames)
+                opt.zero_grad(set_to_none=True)
+                loss.backward()
+                opt.step()
+
+                # keep quats normalized if training rotations
+                if train_rot and self.rotation_optim_case == "quaternion":
+                    with torch.no_grad():
+                        self.rotation_params.copy_(self.rotation_params / (self.rotation_params.norm(dim=-1, keepdim=True) + 1e-12))
+
+            # score quickly
+            self.eval()
+            loss_acc, n = 0.0, 0
+            with torch.no_grad():
+                for _ in range(int(score_batches)):
+                    idx = torch.randint(0, N, (min(batch_size, N),), device=device)
+                    yhat = self.forward(idx)
+                    frames = self.frames[idx]
+                    frames = self._prepare_frames_for_stage(frames)
+                    if self.normalize:
+                        frames = self.per_channel_normalization(frames)
+                        yhat = self.per_channel_normalization(yhat)
+                    loss_acc += self.projection_loss(yhat, frames).item()
+                    n += 1
+            scores[key] = loss_acc / max(n, 1)
+
+        # choose best
+        best_key = min(scores, key=scores.get)
+
+        # restore translation params (values)
+        if t_backup is not None:
+            with torch.no_grad():
+                self.translation_params.copy_(t_backup)
+
+        # set best rotations, keep best volume state (optional: keep best volume or restore original)
+        with torch.no_grad():
+            qbest = q_candidates[best_key].to(device)
+            qbest = qbest / (qbest.norm(dim=-1, keepdim=True) + 1e-12)
+        self.rotation_params = nn.Parameter(qbest)
+
+        return best_key, scores
+
     def configure_optimizers(self):
         param_groups = []
 
-        # Volume
+        # -------- Volume params --------
         if getattr(self, "binarize_volume", False):
             params = list(self.mus)
-            params.append(self.amps_raw)
-            param_groups.append({"params": params, "lr": self.learning_rate_volume})
+            if hasattr(self, "amps_raw"):
+                params.append(self.amps_raw)
 
+            lr = float(self.learning_rate_volume)
+            param_groups.append({
+                "params": params,
+                "lr": lr,
+                "base_lr": lr,
+                "tag": "volume",
+            })
         else:
             if hasattr(self, "volume"):
-                param_groups.append({"params": [self.volume], "lr": self.learning_rate_volume})
+                lr = float(self.learning_rate_volume)
+                param_groups.append({
+                    "params": [self.volume],
+                    "lr": lr,
+                    "base_lr": lr,
+                    "tag": "volume",
+                })
 
-        # ALWAYS include rotation + translation if they exist
+        # Scale parameter dn_scale if using logit parameterization
+        if self.dn_param == "logit":
+            if hasattr(self, "dn_scale"):
+                lr = float(self.learning_rate_volume) * 0.5  # smaller LR for scale parameter
+                param_groups.append({
+                    "params": [self.dn_scale],
+                    "lr": lr,
+                    "base_lr": lr,
+                    "tag": "dn_scale",
+                })
+
+        # -------- Rotation params --------
         if hasattr(self, "rotation_params"):
-            param_groups.append({"params": [self.rotation_params], "lr": self.learning_rate_rotation})
+            lr = float(self.learning_rate_rotation)
+            param_groups.append({
+                "params": [self.rotation_params],
+                "lr": lr,
+                "base_lr": lr,
+                "tag": "rotation",
+            })
 
+        # -------- Translation params --------
         if hasattr(self, "translation_params"):
-            param_groups.append({"params": [self.translation_params], "lr": self.learning_rate_translation})
+            lr = float(self.learning_rate_translation)
+            param_groups.append({
+                "params": [self.translation_params],
+                "lr": lr,
+                "base_lr": lr,
+                "tag": "translation",
+            })
 
-        optimizer = torch.optim.Adam(param_groups)
+        if not param_groups:
+            raise ValueError("No parameters to optimize. Did you call initialize_parameters()?")
+
+        # ---- Choose optimizer (defaults keep old behavior) ----
+        # If you want: pass optimizer_cls=torch.optim.SGD etc via kwargs in __init__
+        optimizer_cls = getattr(self, "tomo_optimizer_cls", torch.optim.AdamW)
+        optimizer_kwargs = getattr(self, "tomo_optimizer_kwargs", {})  # e.g. {"weight_decay": 1e-4}
+
+        optimizer = optimizer_cls(param_groups, **optimizer_kwargs)
 
         scheduler = {
             "scheduler": torch.optim.lr_scheduler.ReduceLROnPlateau(
-                optimizer, mode="min", factor=0.7, patience=20, threshold=2e-3, min_lr=5e-7
+                optimizer,
+                mode="min",
+                factor=0.7,
+                patience=20,
+                threshold=2e-3,
+                min_lr=5e-7,
             ),
             "monitor": "train_total_loss",
         }
@@ -724,20 +948,26 @@ class Tomography(dl.Application):
     def initialize_volume(self):
         """
         Initialize the volume with shape (nx, ny, nz) from self.volume_size.
-        """
-        nx, ny, nz = self.volume_size  # get actual volume dimensions
 
-        #if self.binarize_volume:
-            #self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device) * 1e-1)  # small random initialization
-        
-        if self.binarize_volume and self.initial_volume != 'given':
-            # Create 3D coordinate grids
+        Fluorescence (binarize_volume=True):
+            Keep existing Gaussian-spot parameterization; self.volume is just a placeholder.
+
+        Non-fluorescence:
+            Two modes controlled by self.dn_param:
+            - "logit": self.volume stores logits, physical Δn = dn_max * sigmoid(self.volume)
+            - "direct": self.volume stores physical Δn directly
+        """
+        nx, ny, nz = self.volume_size
+
+        # ---------------------------
+        # Fluorescence regime: keep as-is
+        # ---------------------------
+        if getattr(self, "binarize_volume", False) and self.initial_volume != "given":
             x = torch.arange(nx, device=self._device) - nx / 2
             y = torch.arange(ny, device=self._device) - ny / 2
             z = torch.arange(nz, device=self._device) - nz / 2
-            xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
+            xx, yy, zz = torch.meshgrid(x, y, z, indexing="ij")
 
-            # Initialize Gaussian centers (mus)
             mus = min(nx, ny, nz) * (torch.rand(self.n_spots, 3, device=self._device) - 0.5)
             self.mus = [
                 nn.Parameter(mus[:, 0]),
@@ -745,50 +975,75 @@ class Tomography(dl.Application):
                 nn.Parameter(mus[:, 2]),
             ]
 
-            # Initialize amplitudes for each Gaussian spot (optional, can be learned or fixed)
             self.amps_raw = nn.Parameter(torch.zeros(self.n_spots, device=self._device))
 
-            # Compute Gaussian cloud volume
             dx = xx[None] - self.mus[0][:, None, None, None]
             dy = yy[None] - self.mus[1][:, None, None, None]
             dz = zz[None] - self.mus[2][:, None, None, None]
 
-            cloud = torch.sum(
-                torch.exp(-self.sigma * (dx**2 + dy**2 + dz**2)),
-                dim=0
-            )
-
-            # Normalize to 0 to 1
-            cloud = cloud / cloud.max()
+            cloud = torch.sum(torch.exp(-self.sigma * (dx**2 + dy**2 + dz**2)), dim=0)
+            cloud = cloud / (cloud.max() + 1e-12)
             cloud = torch.clamp(cloud, 0, 0.1)
 
-            self.volume = cloud
+            # Placeholder only; get_volume() ignores this branch and builds from mus/amps
+            self.volume = cloud.clone().detach()
+            return
 
-        elif self.initial_volume == 'gaussian':
-            x = torch.arange(nx) - nx / 2
-            y = torch.arange(ny) - ny / 2
-            z = torch.arange(nz) - nz / 2
-            xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
-            cloud = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
-            cloud = cloud / cloud.max()
-            cloud = torch.clamp(cloud, 0, 0.1)
-            self.volume = nn.Parameter(cloud.to(self._device))
+        # ---------------------------
+        # Non-fluorescence: Δn initialization (physical space)
+        # ---------------------------
+        dn_max = float(getattr(self, "dn_max", 0.20))
+        dn_param = getattr(self, "dn_param", "direct")  # "logit" or "direct"
 
-        elif self.initial_volume == 'zeros':
-            self.volume = nn.Parameter(torch.zeros(nx, ny, nz, device=self._device))
+        def logit(p, eps=1e-6):
+            p = p.clamp(eps, 1.0 - eps)
+            return torch.log(p) - torch.log(1.0 - p)
 
-        elif self.initial_volume == 'refraction':
-            self.volume = nn.Parameter(torch.ones(nx, ny, nz, device=self._device) * 1.33)
+        def dn_to_logits(dn):
+            p = (dn / dn_max).clamp(1e-6, 1.0 - 1e-6)
+            return logit(p)
 
-        elif self.initial_volume == 'random':
-            self.volume = nn.Parameter(torch.rand(nx, ny, nz, device=self._device))
+        # ---- choose initial Δn field (dn0) in PHYSICAL units ----
+        if self.initial_volume == "given" and self.volume_init is not None:
+            dn0 = self.volume_init.to(self._device)
 
-        elif self.initial_volume == 'given' and self.volume_init is not None:
-            self.volume = nn.Parameter(self.volume_init.to(self._device))
+        elif self.initial_volume == "gaussian":
+            x = torch.arange(nx, device=self._device) - nx / 2
+            y = torch.arange(ny, device=self._device) - ny / 2
+            z = torch.arange(nz, device=self._device) - nz / 2
+            xx, yy, zz = torch.meshgrid(x, y, z, indexing="ij")
+            dn0 = torch.exp(-0.001 * (xx**2 + yy**2 + zz**2))
+            dn0 = dn0 / (dn0.max() + 1e-12)
+            dn0 = torch.clamp(dn0, 0.0, min(0.1, dn_max))
 
-        # Override with given volume if specified
-        if self.initial_volume == 'given' and self.volume_init is not None:
-            self.volume = nn.Parameter(self.volume_init.to(self._device))
+        elif self.initial_volume in ("zeros", None):
+            # Start tiny but nonzero so logits aren't -inf and gradients are healthy
+            dn0 = torch.full((nx, ny, nz), 0.002, device=self._device)
+
+        elif self.initial_volume == "random":
+            dn0 = (0.01 * torch.rand(nx, ny, nz, device=self._device)).clamp(0.0, dn_max)
+
+        elif self.initial_volume == "refraction":
+            # For Δn, treat this as small positive Δn, NOT absolute RI
+            dn0 = torch.full((nx, ny, nz), 0.002, device=self._device)
+
+        else:
+            dn0 = torch.full((nx, ny, nz), 0.002, device=self._device)
+
+        dn0 = dn0.clamp(0.0, dn_max)
+
+        # ---------------------------
+        # Store parameter according to dn_param mode
+        # ---------------------------
+        if dn_param == "direct":
+            # direct physical Δn parameter
+            self.volume = nn.Parameter(dn0)
+        elif dn_param == "logit":
+            # logits parameter; physical Δn is produced in get_volume()
+            self.volume = nn.Parameter(dn_to_logits(dn0))
+            self.dn_scale = nn.Parameter(torch.tensor(1.0, device=self._device))
+        else:
+            raise ValueError(f"Unknown dn_param='{dn_param}'. Use 'direct' or 'logit'.")
 
     def initialize_translation(self, N):
         """
@@ -880,11 +1135,6 @@ class Tomography(dl.Application):
         idx_batch = batch
         frames_batch = self.frames[idx_batch]
         
-        # Safely unpad to original size.
-        if hasattr(self, 'H_orig') and hasattr(self, 'W_orig'):
-            if frames_batch.shape[2:] != (self.H_orig, self.W_orig):
-                frames_batch = self.unpad_to_original(frames_batch)
-        
         # Apply stage-specific frame preprocessing (e.g., downsampling, blurring)
         frames_batch = self._prepare_frames_for_stage(frames_batch)
 
@@ -932,6 +1182,11 @@ class Tomography(dl.Application):
 
             tot_loss = proj_loss + latent_loss + rtv_loss + qv_loss + q0_loss + rtr_loss + so_loss
 
+            # Optional upper bound penalty for direct Δn parameterization to encourage physical realism (can be turned off if it hurts convergence or if you have a good initialization)
+            #if getattr(self, "dn_param", "direct") == "direct":
+            #    upper_pen = torch.relu(self.volume - self.dn_max).mean() * 100
+            #    tot_loss = tot_loss + upper_pen
+
             # Log losses
             loss_dict = {
                 "total_loss": tot_loss,
@@ -942,6 +1197,7 @@ class Tomography(dl.Application):
                 "qv_loss": qv_loss,
                 "q0_loss": q0_loss,
                 "so_loss": so_loss,
+                #"upper_pen": upper_pen if getattr(self, "dn_param", "direct") == "direct" else torch.tensor(0.0, device=self._device),
             }
 
             # Binarization loss for fluorescence regime
@@ -1051,7 +1307,12 @@ class Tomography(dl.Application):
                     # brightfield/etc: update volume Parameter
                     if hasattr(self, "volume") and self.volume.grad is not None:
                         self.volume -= self.lr_volume_manual * self.volume.grad
-                        self.volume.clamp_(0.0, 1.0)
+                        #self.volume.clamp_(0.0, 1.0)
+                        if self.dn_param == "logit":
+                            self.volume.clamp_(-8.0, 8.0)   # clamp logits
+                        else:
+                            self.volume.clamp_(0.0, 1.0)    # clamp direct Δn (or 0..0.15)
+
 
                 # --- Rotation update ---
                 if self.rotation_params.requires_grad and self.rotation_params.grad is not None:
@@ -1178,7 +1439,7 @@ class Tomography(dl.Application):
 
         return tensor[:, :, pad_top:H - pad_bottom, pad_left:W - pad_right]
 
-    def projection_loss(self, yhat, frames_batch):
+    def projection_loss123(self, yhat, frames_batch):
         """
         Compute the projection loss using Mean Squared Error (MSE).
         """
@@ -1189,6 +1450,37 @@ class Tomography(dl.Application):
             frames_batch = frames_batch[:, 0] + 1j * frames_batch[:, 1]
 
         return torch.square(torch.abs(yhat - frames_batch)).mean()
+    
+    def projection_loss(self, yhat, frames, eps=1e-8):
+        """
+        Projection loss with per-sample gain correction.
+        Solves alpha per sample in closed form:
+            alpha = argmin || alpha*yhat - frames ||^2
+        """
+
+        B = yhat.shape[0]
+
+        # flatten spatial dims
+        y = yhat.reshape(B, -1)
+        f = frames.reshape(B, -1)
+
+        # complex-safe inner products
+        if torch.is_complex(y):
+            num = torch.real((y.conj() * f).sum(dim=1, keepdim=True))
+            den = torch.real((y.conj() * y).sum(dim=1, keepdim=True))
+        else:
+            num = (y * f).sum(dim=1, keepdim=True)
+            den = (y * y).sum(dim=1, keepdim=True)
+
+        alpha = num / den.clamp_min(eps)
+
+        # Safe range for alpha to prevent extreme scaling (can be tuned or removed if it hurts convergence)
+        alpha = alpha.clamp(0.2, 5.0)
+
+        # corrected prediction
+        y_corr = alpha * y
+
+        return (y_corr - f).abs().mean()
 
     def projection_loss_fluorescence(self, yhat, frames_batch):
         """
@@ -1455,7 +1747,10 @@ class Tomography(dl.Application):
 
             return volume
         else:
-            return self.volume
+            if getattr(self, "dn_param", "direct") == "logit":
+                return self.dn_max * torch.sigmoid(self.dn_scale * self.volume)   # bounded Δn
+                #return self.dn_max * torch.sigmoid(self.volume)   # bounded Δn
+            return self.volume                                    # direct Δn (old)
 
     def _get_volume_for_stage(self):
         vol = self.get_volume()  # (nx,ny,nz) full-res
@@ -1750,7 +2045,20 @@ class Tomography(dl.Application):
         return out.squeeze(1)
 
     def _make_imaging_model_for_shape(self, shape_xyz, **optics_kwargs):
-        # shape_xyz is (nx, ny, nz)
+        # 1) If user supplied a factory, use it
+        if getattr(self, "imaging_model_factory", None) is not None:
+            model = self.imaging_model_factory(shape_xyz)
+            if not isinstance(model, nn.Module):
+                raise TypeError("imaging_model_factory must return an nn.Module")
+            return model.to(self._device)
+
+        # 2) If current model is shape-agnostic, reuse it
+        # (Sum3d2d, or any model that doesn't need rebuilding)
+        # Heuristic: if it's Sum3d2d OR has attribute `shape_agnostic=True`
+        if isinstance(self.imaging_model, Sum3d2d) or getattr(self.imaging_model, "shape_agnostic", False):
+            return self.imaging_model.to(self._device)
+
+        # 3) Otherwise: default optics rebuild (your current behavior)
         optics_setup = setup_optics(
             shape=shape_xyz,
             microscopy_regime=self.imaging_model.microscopy_regime,
@@ -1758,7 +2066,6 @@ class Tomography(dl.Application):
         )
         model = imaging_model(optics_setup).to(self._device)
         return model
-
 
     def set_stage(self, scale=1.0, blur_sigma=0.0, use_latent=True, stage_name=None, **optics_kwargs):
         self.stage_scale = float(scale)
@@ -1943,12 +2250,29 @@ class Tomography(dl.Application):
 
     def toggle_gradients_volume(self, requires_grad: bool):
         """
-        Toggle gradients for the volume (or logits, for fluorescence).
-        """
+        Toggle gradients for the volume parameters.
 
-        if hasattr(self, "volume"):
-            self.volume.requires_grad = requires_grad
+        - Fluorescence (binarize_volume=True): mus (+ amps_raw) are the trainables
+        - Otherwise: self.volume is the trainable
+        """
+        if getattr(self, "binarize_volume", False):
+            # fluorescence: optimize mus (+ amps_raw)
+            if hasattr(self, "mus"):
+                for p in self.mus:
+                    p.requires_grad_(requires_grad)
+            if hasattr(self, "amps_raw"):
+                self.amps_raw.requires_grad_(requires_grad)
             self.volume_flag = requires_grad
+            return
+
+        # non-fluorescence: optimize self.volume if it's a leaf Parameter
+        if hasattr(self, "volume") and isinstance(self.volume, nn.Parameter):
+            self.volume.requires_grad_(requires_grad)
+            self.volume_flag = requires_grad
+            return
+
+        # If it's a non-leaf tensor for some reason, do nothing safely
+        self.volume_flag = requires_grad
 
     def swap_rotation_axis(self):
         """ 
@@ -1967,10 +2291,15 @@ class Tomography(dl.Application):
                     self.volume.clamp_(0.0, 1.0)
 
                 # Normalize rotation parameters (quaternions)
-                if hasattr(self, "rotation_params") and self.rotation_params.requires_grad:
+                if hasattr(self, "rotation_params") and self.rotation_params.requires_grad and self.rotation_optim_case == 'quaternion':
                     self.rotation_params[:] = (
                         self.rotation_params / self.rotation_params.norm(dim=1, keepdim=True)
                     )
+                elif hasattr(self, "rotation_params") and self.rotation_params.requires_grad and self.rotation_optim_case == 'basis':
+                    quats = torch.matmul(self.basis, self.rotation_params)
+                    quats = quats / quats.norm(dim=1, keepdim=True)
+                    coeffs = torch.linalg.lstsq(self.basis, quats).solution
+                    self.rotation_params[:] = coeffs
 
     def on_train_epoch_end(self):
         """
@@ -1985,6 +2314,13 @@ class Tomography(dl.Application):
                 #         self.volume.clamp_(1.0, 2.0)
                 #    else:
                 #         self.volume.clamp_(0.0, 1.0)
+                if hasattr(self, "volume") and self.volume.requires_grad:
+                    if getattr(self, "dn_param", "direct") == "logit":
+                        self.volume.clamp_(-6.0, 6.0)  # tighter than 8 helps optimization
+
+                if hasattr(self, "volume") and isinstance(self.volume, torch.nn.Parameter) and self.volume.requires_grad:
+                    if getattr(self, "dn_param", "direct") == "direct":
+                        self.volume.clamp_(0.0, 1e9)
 
                 # --- Handle quaternion rotations ---
                 if self.rotation_optim_case == 'quaternion' and self.rotation_params.requires_grad:
@@ -2093,6 +2429,11 @@ class Tomography(dl.Application):
         else:
             self._stage_loss_weights = self.loss_weights
 
+        # per-stage lr mults override
+        self._stage_lr_mult = {"volume": 1.0, "rotation": 1.0, "translation": 1.0}
+        if st.lr_mult is not None:
+            self._stage_lr_mult.update(st.lr_mult)
+
     def advance_stage_if_needed(self, steps_per_stage: Sequence[int]):
         if not self.stages:
             return
@@ -2102,6 +2443,34 @@ class Tomography(dl.Application):
                 self.stage_idx += 1
                 self.stage_step = 0
                 self._apply_current_stage()
+                self._apply_stage_lrs_to_optimizer()
+
+    def _apply_stage_lrs_to_optimizer(self):
+        # If no stages, do nothing (keeps old behavior)
+        if not getattr(self, "stages", None):
+            return
+
+        # If stage doesn't define lr mults, do nothing
+        mult = getattr(self, "_stage_lr_mult", None)
+        if not mult:
+            return
+
+        opt = self.optimizers()  # lightning helper (works inside training)
+        if opt is None:
+            return
+
+        for pg in opt.param_groups:
+            tag = pg.get("tag", None)
+            base = pg.get("base_lr", pg.get("lr", None))
+            if base is None or tag is None:
+                continue
+
+            if tag == "volume":
+                pg["lr"] = base * float(mult.get("volume", 1.0))
+            elif tag == "rotation":
+                pg["lr"] = base * float(mult.get("rotation", 1.0))
+            elif tag == "translation":
+                pg["lr"] = base * float(mult.get("translation", 1.0))
 
 
 class StageScheduler(Callback):
@@ -2142,6 +2511,7 @@ class StageScheduler(Callback):
             pl_module.stage_idx = new_stage_idx
             pl_module.stage_step = 0
             pl_module._apply_current_stage()
+            pl_module._apply_stage_lrs_to_optimizer()
             print(f"[StageScheduler] step {trainer.global_step} -> stage {pl_module.stage_idx}: {pl_module._stage_name}")
 
         # keep a per-stage counter if you want it

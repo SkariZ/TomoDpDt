@@ -204,7 +204,7 @@ def generate_random_varying_quaternion(omega1=2 * np.pi, omega2=np.pi / 3,
     return np.array([q0, q1, q2, q3]).T
 
 def generate_integrated_angular_velocity_quaternion(
-        duration=2.0, samples=200, noise_scale=0.3, base_speed=1.5):
+        duration=2.0, samples=200, noise_scale=0.35, base_speed=1.5):
     """
     Generate a realistic random smooth rotation by integrating
     a time-varying angular velocity vector.
@@ -314,9 +314,9 @@ def generate_axis_switching_quaternion(
 def generate_ou_quaternion(
         duration=2.0,
         samples=200,
-        tau=0.3,                # correlation time (s)
-        sigma=1.2,              # noise strength
-        base_speed=1.0,         # drift rotation speed
+        tau=0.2,                # correlation time (s)
+        sigma=1.1,              # noise strength
+        base_speed=1.75,         # drift rotation speed
         seed=None):
     """
     Generate a quaternion trajectory using an Ornstein–Uhlenbeck (OU)
