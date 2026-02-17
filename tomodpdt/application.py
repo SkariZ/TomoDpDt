@@ -269,7 +269,7 @@ class Tomography(dl.Application):
         self.automatic_optimization = automatic_optimization
 
         # Flag to enable/disable on_train_batch_end operations
-        self.on_train_batch_end_enabled = kwargs.pop('on_train_batch_end_enabled', True)
+        self.on_train_batch_end_enabled = kwargs.pop('on_train_batch_end_enabled', False)
         self.on_train_epoch_end_enabled = kwargs.pop('on_train_epoch_end_enabled', True)
         self.smooth_startup = False #kwargs.get('smooth_startup', True) if automatic_optimization else False
         self.smooth_startup_rotations = kwargs.pop('smooth_startup_rotations', 100) if automatic_optimization else 0
@@ -301,7 +301,7 @@ class Tomography(dl.Application):
             xx, yy, zz = torch.meshgrid(x, y, z, indexing='ij')
 
             self.sigma = 0.4
-            self.n_spots = 20
+            self.n_spots = 25
 
             self.mesh = [
                 xx.to(self._device),
