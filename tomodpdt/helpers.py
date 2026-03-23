@@ -331,7 +331,10 @@ def inverse_pixels(image):
 if __name__ == '__main__':
 
     import numpy as np
-    object = np.load('../test_data/vol_potato2.npy') 
+    from pathlib import Path
+
+    test_data_dir = Path(__file__).resolve().parents[1] / "test_data"
+    object = np.load(test_data_dir / 'vol_potato2.npy')
 
     image = object.sum(-1)
 

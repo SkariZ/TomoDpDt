@@ -2,16 +2,25 @@ import torch
 import numpy as np
 import scipy.ndimage
 import matplotlib.pyplot as plt
+from pathlib import Path
 
 ### Setttings ###
 DEV = torch.device('cuda' if torch.cuda.is_available() else 'cpu') # Set the device
 SIZE = 64  # Size of the 3D object
 RI_RANGE = (1.33, 1.42)
 RERUN = False
+TEST_DATA_DIR = Path(__file__).resolve().parents[1] / "test_data"
 
-# Set the random seed for reproducibility
-np.random.seed(123)
-torch.manual_seed(123)
+
+def set_random_seed(seed=123):
+    """Set NumPy and Torch seeds for reproducible procedural volume generation."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def _load_test_volume(filename):
+    """Load a precomputed test volume shipped with the repository."""
+    return np.load(TEST_DATA_DIR / filename)
 
 
 def generate_3d_volume(size, num_layers, layer_densities):
@@ -116,7 +125,7 @@ if RERUN:
     VOL_GAUSS = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 else:
     # Load the precomputed volume
-    VOL_GAUSS = np.load('../test_data/vol_gauss.npy')
+    VOL_GAUSS = _load_test_volume("vol_gauss.npy")
 
 #################
 
@@ -134,7 +143,7 @@ if RERUN:
     VOL_SHELL = (volume - volume.min()) / (volume.max() - volume.min()) * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 else:
     # Load the precomputed volume
-    VOL_SHELL = np.load('../test_data/vol_shell.npy')
+    VOL_SHELL = _load_test_volume("vol_shell.npy")
 
 ##################
 
@@ -158,7 +167,7 @@ if RERUN:
 
 else:
     # Load the precomputed volume
-    VOL_FLUO = np.load('../test_data/vol_fluo.npy')
+    VOL_FLUO = _load_test_volume("vol_fluo.npy")
 
 ##################
 
@@ -182,7 +191,7 @@ if RERUN:
     
 else:
     # Load the precomputed volume
-    VOL_GAUSS_MULT = np.load('../test_data/vol_gauss_mult.npy')
+    VOL_GAUSS_MULT = _load_test_volume("vol_gauss_mult.npy")
 
 ##################
 
@@ -216,10 +225,11 @@ if RERUN:
     VOL_RANDOM = grid * (RI_RANGE[1] - RI_RANGE[0]) + RI_RANGE[0]
 else:
     # Load the precomputed volume
-    VOL_RANDOM = np.load('../test_data/vol_random.npy')
+    VOL_RANDOM = _load_test_volume("vol_random.npy")
 
 
 if __name__== "__main__":
+    set_random_seed(123)
 
     ### VOLUME 1 ###
     fig, ax = plt.subplots(1, 3, figsize=(8, 3))
@@ -261,9 +271,9 @@ if __name__== "__main__":
         ax[j].set_title(f'Axis {j}')
     plt.show()
 
-    # Save the volumes as numpy files in ../test_data/
-    np.save('../test_data/vol_gauss.npy', VOL_GAUSS)
-    np.save('../test_data/vol_shell.npy', VOL_SHELL)
-    np.save('../test_data/vol_fluo.npy', VOL_FLUO)
-    np.save('../test_data/vol_gauss_mult.npy', VOL_GAUSS_MULT)
-    np.save('../test_data/vol_random.npy', VOL_RANDOM)
+    # Save the volumes to the repository test-data directory.
+    np.save(TEST_DATA_DIR / 'vol_gauss.npy', VOL_GAUSS)
+    np.save(TEST_DATA_DIR / 'vol_shell.npy', VOL_SHELL)
+    np.save(TEST_DATA_DIR / 'vol_fluo.npy', VOL_FLUO)
+    np.save(TEST_DATA_DIR / 'vol_gauss_mult.npy', VOL_GAUSS_MULT)
+    np.save(TEST_DATA_DIR / 'vol_random.npy', VOL_RANDOM)

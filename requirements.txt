@@ -1,5 +1,13 @@
 deeplay
 deeptrack
-plotly
-scipy
+lightning
+matplotlib
+nbclient
+nbformat
+numpy
 opencv-python
+plotly
+pytest
+scipy
+torch
+torchvision

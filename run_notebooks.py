@@ -1,9 +1,15 @@
+import contextlib
+import io
+import os
+import re
+import time
+import traceback
+from datetime import datetime
+from pathlib import Path
+
 import nbformat
 from nbclient import NotebookClient
 from nbformat import from_dict
-from pathlib import Path
-from datetime import datetime
-import traceback, time, contextlib, io, re, os
 
 # === CONFIG ===
 NOTEBOOK_DIR = Path("Notebooks")
@@ -22,7 +28,7 @@ def log(msg: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(msg + "\n")
 
-# Patterns to suppress
+
 SUPPRESS_PATTERNS = [
     r"Epoch\s+\d+",
     r"batch",
@@ -34,8 +40,8 @@ SUPPRESS_PATTERNS = [
 
 
 def _looks_noisy(text: str) -> bool:
-    """Detect if a line looks like training/progress noise."""
-    return any(re.search(p, text, flags=re.IGNORECASE) for p in SUPPRESS_PATTERNS)
+    """Detect whether a line looks like training or progress noise."""
+    return any(re.search(pattern, text, flags=re.IGNORECASE) for pattern in SUPPRESS_PATTERNS)
 
 
 def scrub_notebook_outputs(nb, keep_last_lines=5, max_stream_chars=4000):
@@ -51,54 +57,54 @@ def scrub_notebook_outputs(nb, keep_last_lines=5, max_stream_chars=4000):
 
         new_outputs = []
         for out in cell.get("outputs", []):
-            # Ensure NotebookNode
             if isinstance(out, dict):
                 out = from_dict(out)
             elif not hasattr(out, "output_type"):
                 continue
 
-            otype = getattr(out, "output_type", None)
+            output_type = getattr(out, "output_type", None)
 
-            # ---- stream outputs ----
-            if otype == "stream" and isinstance(out.get("text"), str):
+            if output_type == "stream" and isinstance(out.get("text"), str):
                 text = out["text"]
                 if len(text) > max_stream_chars or _looks_noisy(text):
                     scrubbed_count += 1
-                    lines = [ln for ln in text.splitlines() if not _looks_noisy(ln)]
+                    lines = [line for line in text.splitlines() if not _looks_noisy(line)]
                     tail = "\n".join(lines[-keep_last_lines:]).strip()
                     summary = f"[suppressed training logs: {len(text):,} chars]\n"
                     compact = summary + (tail + "\n" if tail else "")
-                    out = from_dict({
-                        "output_type": "stream",
-                        "name": out.get("name", "stdout"),
-                        "text": compact,
-                    })
+                    out = from_dict(
+                        {
+                            "output_type": "stream",
+                            "name": out.get("name", "stdout"),
+                            "text": compact,
+                        }
+                    )
                 new_outputs.append(out)
+                continue
 
-            # ---- display_data / execute_result ----
-            elif otype in ("display_data", "execute_result"):
+            if output_type in ("display_data", "execute_result"):
                 data = out.get("data", {})
-                # 🛡️ Keep figures and visual outputs
-                if any(k in data for k in ("image/png", "image/jpeg", "image/svg+xml")):
+                if any(kind in data for kind in ("image/png", "image/jpeg", "image/svg+xml")):
                     new_outputs.append(out)
                     continue
 
-                txt = data.get("text/plain")
-                if isinstance(txt, str) and (_looks_noisy(txt) or len(txt) > max_stream_chars):
+                text_plain = data.get("text/plain")
+                if isinstance(text_plain, str) and (
+                    _looks_noisy(text_plain) or len(text_plain) > max_stream_chars
+                ):
                     scrubbed_count += 1
                     data["text/plain"] = "[suppressed display output]\n"
                     out["data"] = data
                 new_outputs.append(out)
+                continue
 
-            else:
-                new_outputs.append(out)
+            new_outputs.append(out)
 
-        # Deduplicate repeated suppression lines
         if len(new_outputs) > 1:
             deduped = []
-            for o in new_outputs:
-                if not deduped or o.get("text") != deduped[-1].get("text"):
-                    deduped.append(o)
+            for output in new_outputs:
+                if not deduped or output.get("text") != deduped[-1].get("text"):
+                    deduped.append(output)
             new_outputs = deduped
 
         cell["outputs"] = new_outputs
@@ -106,16 +112,17 @@ def scrub_notebook_outputs(nb, keep_last_lines=5, max_stream_chars=4000):
             cell.setdefault("metadata", {}).setdefault("jupyter", {})["outputs_hidden"] = False
 
     if scrubbed_count:
-        log(f"   🧹 Scrubbed {scrubbed_count} noisy outputs")
+        log(f"   Scrubbed {scrubbed_count} noisy outputs")
     return nb
 
 
 class StreamFilter(io.StringIO):
-    """Filters out Lightning/tqdm spam in real-time."""
+    """Filter out Lightning or tqdm spam in real time."""
+
     def write(self, s):
         if not s.strip():
             return
-        if any(re.search(p, s, re.IGNORECASE) for p in SUPPRESS_PATTERNS):
+        if any(re.search(pattern, s, re.IGNORECASE) for pattern in SUPPRESS_PATTERNS):
             return
         super().write(s)
 
@@ -129,16 +136,16 @@ def run_notebooks():
         raise FileNotFoundError(f"No notebooks found in {NOTEBOOK_DIR.resolve()}")
 
     if KEYWORDS_TO_IGNORE:
-        notebooks = [nb for nb in notebooks if not any(k in nb.name for k in KEYWORDS_TO_IGNORE)]
+        notebooks = [nb for nb in notebooks if not any(keyword in nb.name for keyword in KEYWORDS_TO_IGNORE)]
 
-    log(f"📁 Found {len(notebooks)} notebooks in {NOTEBOOK_DIR.resolve()}")
-    log("⚙️  Running notebooks and cleaning outputs...\n")
+    log(f"Found {len(notebooks)} notebooks in {NOTEBOOK_DIR.resolve()}")
+    log("Running notebooks and cleaning outputs...\n")
 
     os.environ["NB_AUTOMATED_RUN"] = "1"
 
     for nb_path in notebooks:
-        t0 = time.time()
-        log(f"🚀 Running {nb_path.name} ...")
+        start_time = time.time()
+        log(f"Running {nb_path.name} ...")
         try:
             nb = nbformat.read(nb_path, as_version=4)
             client = NotebookClient(
@@ -152,27 +159,23 @@ def run_notebooks():
             with contextlib.redirect_stdout(filtered), contextlib.redirect_stderr(filtered):
                 client.execute()
 
-            txt = filtered.getvalue().strip()
-            if txt:
-                log(txt)
+            filtered_text = filtered.getvalue().strip()
+            if filtered_text:
+                log(filtered_text)
 
-            # Clean outputs
             nb = scrub_notebook_outputs(nb, keep_last_lines=8, max_stream_chars=4000)
-
             nbformat.write(nb, nb_path)
-            log(f"✅ Finished {nb_path.name} in {(time.time()-t0)/60:.2f} min\n")
-        except Exception as e:
-            log(f"❌ Error in {nb_path.name}: {e}")
-            log("".join(traceback.format_exception(e)))
+            elapsed_minutes = (time.time() - start_time) / 60
+            log(f"Finished {nb_path.name} in {elapsed_minutes:.2f} min\n")
+        except Exception as exc:
+            log(f"Error in {nb_path.name}: {exc}")
+            log("".join(traceback.format_exception(exc)))
             if STOP_ON_ERROR:
                 break
 
-    log("\n🎉 All notebooks processed.")
+    log("\nAll notebooks processed.")
     log(f"Completed at {datetime.now()}")
 
 
 if __name__ == "__main__":
     run_notebooks()
-
-
-

@@ -153,13 +153,12 @@ def field_to_vec_multi(fields, pupil_radius, mask=None, mask_shape='ellipse'):
             mask = create_ellipse_mask(h, w, percent=pupil_radius/h)
     mask = mask.type(torch.bool).to(fields.device)
 
-    fvec = torch.tensor([], dtype=torch.complex64, device=fields.device)
+    vectors = []
     for field in fields:
         fft_image = fft.fftshift(fft.fft2(field))
-        vec = fft_image[mask]
-        fvec = torch.cat((fvec, vec.unsqueeze(0)), dim=0)
-    
-    return fvec
+        vectors.append(fft_image[mask])
+
+    return torch.stack(vectors, dim=0)
 
 
 def vec_to_field(vec, pupil_radius, shape, mask=None, mask_shape='ellipse', to_real=False):
@@ -222,12 +221,13 @@ def vec_to_field_multi(vecs, pupil_radius, shape, mask=None, mask_shape='ellipse
 
     mask = mask.type(torch.complex64).to(vecs.device)
 
-    fields = torch.tensor([], dtype=torch.complex64, device=vecs.device)
+    fields = []
     for vec in vecs:
         mm = mask.clone()
         mm[mm == 1] = vec
-        field = fft.ifft2(fft.ifftshift(mm))
-        fields = torch.cat((fields, field.unsqueeze(0)), dim=0)
+        fields.append(fft.ifft2(fft.ifftshift(mm)))
+
+    fields = torch.stack(fields, dim=0)
 
     if to_real:
         fields = torch.stack([data_to_real(f) for f in fields], dim=0)

@@ -3,10 +3,11 @@ import torch.nn as nn
 import torch.nn.functional as F
 import time
 import numpy as np
+from pathlib import Path
 
 try:
     import tomodpdt.image_modalities_dt as dt
-except Exception:
+except ImportError:
     import image_modalities_dt as dt
 
 import deeptrack
@@ -500,10 +501,11 @@ def test_model(microscopy_regime: str,
 
 if __name__ == "__main__":
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    test_data_dir = Path(__file__).resolve().parents[1] / "test_data"
 
     # Load your test volume(s)
-    vol_a = np.load("../test_data/vol_gauss_mult.npy") - 1.33
-    vol_b = np.load("../test_data/vol_gauss_mult.npy") - 1.33
+    vol_a = np.load(test_data_dir / "vol_gauss_mult.npy") - 1.33
+    vol_b = np.load(test_data_dir / "vol_gauss_mult.npy") - 1.33
 
     vol_a = torch.tensor(vol_a, device=device)
     vol_b = torch.tensor(vol_b, device=device)
@@ -517,6 +519,6 @@ if __name__ == "__main__":
 
     # Fluorescence test (if you have a fluorescence volume, pass it here)
     # Example: fluorescence volume should be nonnegative, sparse-ish
-    fluor = torch.tensor(np.load("../test_data/vol_fluo.npy"), device=device)
+    fluor = torch.tensor(np.load(test_data_dir / "vol_fluo.npy"), device=device)
     fluor = fluor[8:, 16:, :]
     test_model("fluorescence", fluor, None, padding_xy=64, return_field=False, device=device)

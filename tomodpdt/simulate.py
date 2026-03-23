@@ -9,7 +9,7 @@ try:
     import tomodpdt.imaging_modality_torch as IMT
     import tomodpdt.volumes as V
     import tomodpdt.application as A
-except:
+except ImportError:
     import rotations as R
     import forward_module as FM
     import imaging_modality_torch as IMT

@@ -422,7 +422,7 @@ def process_cross_correlation(
     # Smooth cross-correlation series
     try:
         cc = savgol_filter(cc.cpu().numpy(), window_length=11, polyorder=2)
-    except:
+    except Exception:
         cc = cc.cpu().numpy()
 
     cc = torch.tensor(cc, dtype=torch.float32)
@@ -549,7 +549,7 @@ def find_peaks(res, peaks_period_range=[20, 100], max_peaks=7,
     for dist in range(*distance_range):
         try:
             peaks = signal.find_peaks(res, distance=dist, prominence=prominence, width=width)[0]
-        except:
+        except Exception:
             peaks = []
             
         if min_peaks < len(peaks) < max_peaks:

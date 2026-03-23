@@ -343,7 +343,7 @@ def plots_initial(tomo, save_folder=None, gt=None, dpi=250):
 
     try:
         recon_vae_pred = tomo.vae_model(tomo.frames[:9])[0].cpu()
-    except:
+    except Exception:
         # Crop to size tomo.H_vae, tomo.W_vae
         start_h = (frames.shape[2] - tomo.H_vae) // 2
         start_w = (frames.shape[3] - tomo.W_vae) // 2

@@ -15,14 +15,14 @@ from tomodpdt.estimate_rotations_from_latent import initialize_basis_functions
 
 
 # Importing the necessary modules
-try: 
+try:
     import tomodpdt.estimate_rotations_from_latent as erfl
     import tomodpdt.vaemod as vm
     import tomodpdt.plotting as tp
     from tomodpdt.imaging_modality_torch import setup_optics
     from tomodpdt.imaging_modality_torch import imaging_model
 
-except:
+except ImportError:
     import estimate_rotations_from_latent as erfl
     import vaemod as vm
     import plotting as tp
@@ -99,6 +99,8 @@ class Tomography(dl.Application):
         Learning rate for translation parameters (default: 1e-3).
     automatic_optimization : bool, optional
         If True, use automatic optimization (via PyTorch Lightning); otherwise manual updates.
+    verbose : bool, optional
+        If True, print status messages during initialization and stage scheduling.
     **kwargs : dict
         Additional keyword arguments for the parent `deeplay.Application` class.
 
@@ -157,11 +159,13 @@ class Tomography(dl.Application):
                  learning_rate_rotation: float = 5e-3,
                  learning_rate_translation: float = 1e-3,
                  automatic_optimization: bool = True,
+                 verbose: bool = True,
                  **kwargs):
         
         # Set volume size and dimensions
         self.volume_size = volume_size
         self.nx, self.ny, self.nz = volume_size
+        self.verbose = verbose
         
         # If VAE model is not passed, initialize a default VAE model. This will be updated later if needed.
         self.vae_model = vae_model if vae_model is not None else dl.VariationalAutoEncoder(input_size=(self.volume_size[0], self.volume_size[1]), latent_dim=2)
@@ -331,6 +335,11 @@ class Tomography(dl.Application):
         self.stage_step: int = 0  # step counter inside stage
         self.steps_per_stage = None  # or []
 
+    def _log_message(self, message: str):
+        """Emit status output only when verbose mode is enabled."""
+        if self.verbose:
+            print(message)
+
     def initialize_parameters(self, projections, **kwargs):
         """
         Initialize model parameters:
@@ -458,12 +467,12 @@ class Tomography(dl.Application):
                     frames=projections_vae,
                     **kwargs
                 )
-                print("✅ Rotation initialization from latent space successful.")
+                self._log_message("Rotation initialization from latent space successful.")
                 vae_success = True
                 break  # stop loop once successful
 
             except Exception as e:
-                print(f"VAE attempt {vae_attempts} failed: {e}")
+                self._log_message(f"VAE attempt {vae_attempts} failed: {e}")
                 if vae_attempts < max_vae_attempts:
                     time.sleep(2)  # wait 2 seconds before retrying
 
@@ -483,12 +492,12 @@ class Tomography(dl.Application):
                     self.vae_model.reconstruction_loss = torch.nn.L1Loss()
 
                 else:
-                    print("VAE repeatedly failed — switching to cross-correlation initialization.")
+                    self._log_message("VAE repeatedly failed; switching to cross-correlation initialization.")
                     self.rotation_initial_dict = erfl.process_cross_correlation(
                         frames=projections_vae,
                         **kwargs
                     )
-                    print("✅ Rotation initialization via cross-correlation successful.")
+                    self._log_message("Rotation initialization via cross-correlation successful.")
 
         # -------------------------------------------------------
         # --- 5. Set rotation parameters
@@ -523,7 +532,10 @@ class Tomography(dl.Application):
         # Throw error if automatic_optimizations is True but VAE training is skipped
         if self.automatic_optimization and not vae_success:
             self.stage_use_latent = False
-            print("⚠️ Warning: Automatic optimization enabled but VAE training failed. Latent-based perceptual loss will be disabled.")
+            self._log_message(
+                "Warning: automatic optimization is enabled but VAE training failed. "
+                "Latent-based perceptual loss will be disabled."
+            )
 
 
         self.vae_success = vae_success  # Store VAE success status for later use
@@ -564,7 +576,7 @@ class Tomography(dl.Application):
                 with torch.no_grad():
                     self.rotation_params = nn.Parameter(q_init.clone().to(self._device))
 
-            print("🔄 Starting axis sweep warmup...")
+            self._log_message("Starting axis-sweep warmup...")
             best_axis, scores = self._axis_sweep_warmup(
                 q_candidates=q_candidates,
                 steps=steps,
@@ -572,7 +584,7 @@ class Tomography(dl.Application):
                 score_batches=score_batches,
                 train_rot=train_rot,
             )
-            print(f"✅ Axis sweep chose: {best_axis} | scores: {scores}")
+            self._log_message(f"Axis sweep chose: {best_axis} | scores: {scores}")
 
             # Update the rotation parameters to the best candidate from the sweep
             self.rotation_initial_dict['quaternions'] = q_candidates[best_axis].cpu()  # update initial dict with best candidate
@@ -872,7 +884,7 @@ class Tomography(dl.Application):
             enable_checkpointing=False,
             enable_model_summary=False,
             log_every_n_steps=999999,
-            enable_progress_bar=True,
+            enable_progress_bar=self.verbose,
         )
         trainer.fit(self.vae_model, data_loader)
 
@@ -2488,7 +2500,9 @@ class StageScheduler(Callback):
         pl_module.steps_per_stage = self.steps_per_stage
         pl_module._stage_global_step0 = trainer.global_step  # baseline
         pl_module._apply_current_stage()  # ensure stage 0 applied
-        print(f"[StageScheduler] start -> stage {pl_module.stage_idx}: {pl_module._stage_name}")
+        pl_module._log_message(
+            f"[StageScheduler] start -> stage {pl_module.stage_idx}: {pl_module._stage_name}"
+        )
 
     def on_train_batch_end(self, trainer, pl_module, outputs, batch, batch_idx):
         # advance based on TRAINING STEPS (trainer.global_step increments each optimizer step)
@@ -2512,7 +2526,9 @@ class StageScheduler(Callback):
             pl_module.stage_step = 0
             pl_module._apply_current_stage()
             pl_module._apply_stage_lrs_to_optimizer()
-            print(f"[StageScheduler] step {trainer.global_step} -> stage {pl_module.stage_idx}: {pl_module._stage_name}")
+            pl_module._log_message(
+                f"[StageScheduler] step {trainer.global_step} -> stage {pl_module.stage_idx}: {pl_module._stage_name}"
+            )
 
         # keep a per-stage counter if you want it
         pl_module.stage_step += 1
